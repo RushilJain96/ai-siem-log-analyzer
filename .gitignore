@@ -1,0 +1,61 @@
+# === Dataset and model artifacts ===
+# CICIDS CSVs are gigabytes; never committed
+
+data/raw/*
+!data/raw/.gitkeep
+
+# Trained sklearn/joblib model files
+
+*.pkl
+*.joblib
+
+# === Python runtime ===
+
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# === Virtual environments ===
+
+.venv/
+venv/
+env/
+
+# === Secrets and environment config ===
+# Real secrets — never committed
+.env
+.env.*
+
+# Template — IS committed, hence the negation
+!.env.example
+
+# === Local databases ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === Testing and linting caches ===
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# === Notebook checkpoints ===
+.ipynb_checkpoints/
+
+# === Application logs ===
+*.log
+logs/
+
+# === IDE and editor ===
+.vscode/
+.idea/
+*.swp
+
+# === OS junk ===
+.DS_Store
+Thumbs.db
