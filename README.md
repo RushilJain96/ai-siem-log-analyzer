@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
 
-## Status — Day 1 of 10
+## Status — Day 2 of 10
 
 This project is being built incrementally. The current state is the **foundation**: HTTP API, database, structured logging, CI. The ML detection pipeline and dashboard are upcoming.
 
@@ -13,11 +13,13 @@ This project is being built incrementally. The current state is the **foundation
 - SQLite persistence layer using SQLAlchemy 2.0
 - Endpoints: `POST /logs/ingest`, `GET /logs`, `GET /stats`, `GET /health`
 - Structured JSON logging configured via environment variables
-- pytest test suite covering the full ingest → list → stats flow
+- pytest test suite covering the full ingest → list → stats flow, plus parser unit tests (20 tests total)
 - GitHub Actions CI running tests on every push
+- Chunked sampler producing a 2% stratified sample from the eight CICIDS 2017 CSVs
+- CICIDS row parser handling the dataset's known quirks (leading whitespace in column names, `inf`/`NaN` in flow-rate columns, missing IPs)
+- HTTP-driven ingestion pipeline that seeds the database from parsed CICIDS rows
 
 **Coming next:**
-- CICIDS 2017 dataset ingestion and parsing (Day 2)
 - Feature engineering pipeline (Day 3)
 - Isolation Forest training and evaluation (Day 4)
 - End-to-end detection wired into `POST /logs/ingest` (Day 5)
@@ -25,7 +27,6 @@ This project is being built incrementally. The current state is the **foundation
 - PostgreSQL + Docker (Day 8)
 - Real-time WebSocket dashboard (Day 9)
 - Railway deployment (Day 10)
-
 ## Quick start
 
 Requires Python 3.12+.
@@ -61,6 +62,31 @@ pytest tests/ -v
 
 Tests use an in-memory SQLite database — no setup required, no real database touched.
 
+## Loading sample data
+
+The API is empty on a fresh clone. To seed it with real network flows from
+CICIDS 2017:
+
+```bash
+# 1. Download MachineLearningCSV.zip from https://www.unb.ca/cic/datasets/ids-2017.html
+#    and extract to ~/Downloads/MachineLearningCSV/MachineLearningCVE/ (or set CICIDS_DIR)
+
+# 2. Produce a 2% stratified sample (~56K rows, ~18 MB)
+python -m scripts.sample_cicids
+
+# 3. Start the API in one terminal
+uvicorn api.main:app
+
+# 4. In another terminal, ingest N rows into the running API
+python -m scripts.ingest_sample --count 5000
+
+# 5. Verify
+curl http://localhost:8000/stats
+# {"total_logs":5000,"total_alerts":992,"alert_rate":0.1984}
+```
+
+The sample CSV and the SQLite database file are gitignored — each developer produces their own from their local CICIDS download.
+
 ## Architecture
 
 ```
@@ -94,6 +120,10 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 - SQLite strips timezone info on `DateTime(timezone=True)` columns — `event_time` round-trips as a naive datetime. Postgres (Day 8) will fix this.
 - No authentication on any endpoint. Adding auth is a v2.0 item; the threat model for the portfolio scope is "trusted localhost client only."
 - The `/logs/ingest` endpoint does not yet run anomaly detection — it persists the structured fields and returns. The detection wiring lands on Day 5.
+- CICIDS 2017's MachineLearningCSV files have IP addresses stripped for privacy, so `source_ip` and `destination_ip` are always `null` in ingested rows. Would require `GeneratedLabelledFlows` or raw PCAPs to recover.
+- Per-flow timestamps aren't available in the CICIDS ML CSVs. `event_time` is set to ingestion wall-clock.
+- `LogIngest` accepts `is_alert` and `anomaly_score` from clients as a Day-2 seed-data shortcut using CICIDS ground-truth labels. Day 5 removes these fields once the server-side detector produces them.
+- CICIDS Web Attack labels contain a Unicode replacement character (`�`) from a CP1252 → UTF-8 encoding mismatch in the original dataset. Doesn't affect binary classification.
 
 ## Roadmap
 
