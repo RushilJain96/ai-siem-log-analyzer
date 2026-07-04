@@ -18,6 +18,12 @@ class LogIngest(BaseModel):
     sources provide different subsets. Day 1 stores whatever is sent;
     parsing and feature engineering (Day 2-3) will normalize across
     sources before insertion in later iterations.
+
+    is_alert and anomaly_score are accepted from clients ONLY during the
+    Day 2 seed-data phase, where CICIDS ground-truth labels are used to
+    populate /stats with meaningful numbers before the ML detector is
+    wired in. Day 5 removes these fields from LogIngest so that only the
+    server-side detector can set them.
     """
     event_time: datetime
     source_ip: str | None = Field(default=None, max_length=45)
@@ -28,6 +34,8 @@ class LogIngest(BaseModel):
     duration_seconds: float | None = None
     flag: str | None = Field(default=None, max_length=16)
     raw_payload: str | None = None
+    is_alert: bool = False
+    anomaly_score: float | None = None
 
 
 class LogResponse(BaseModel):
