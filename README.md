@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
 
-## Status — Day 2 of 10
+## Status — Day 3 of 10
 
 This project is being built incrementally. The current state is the **foundation**: HTTP API, database, structured logging, CI. The ML detection pipeline and dashboard are upcoming.
 
@@ -18,9 +18,12 @@ This project is being built incrementally. The current state is the **foundation
 - Chunked sampler producing a 2% stratified sample from the eight CICIDS 2017 CSVs
 - CICIDS row parser handling the dataset's known quirks (leading whitespace in column names, `inf`/`NaN` in flow-rate columns, missing IPs)
 - HTTP-driven ingestion pipeline that seeds the database from parsed CICIDS rows
+- Feature engineering pipeline: 15 hand-selected flow-shape features (volume, rate, packet size, timing)
+- StandardScaler-based normalization fitted on benign rows only to prevent training-time data leakage
+- Fitted preprocessing pipeline persisted to disk via `joblib` for reuse at inference time
+- Per-feature discrimination analysis run at fit time — confirms attack rows shift up to +2.4 std devs on packet-length features
 
 **Coming next:**
-- Feature engineering pipeline (Day 3)
 - Isolation Forest training and evaluation (Day 4)
 - End-to-end detection wired into `POST /logs/ingest` (Day 5)
 - Alert filtering and severity (Day 6)
@@ -85,6 +88,24 @@ curl http://localhost:8000/stats
 # {"total_logs":5000,"total_alerts":992,"alert_rate":0.1984}
 ```
 
+### Fitting the feature pipeline
+
+After loading sample data, fit the preprocessing pipeline used by the
+anomaly detector:
+
+```bash
+python -m scripts.fit_pipeline
+```
+
+This produces `model/preprocessor.pkl`, a fitted StandardScaler plus
+per-column medians for imputation at inference time. The script also
+prints per-feature discrimination stats — attack rows should look
+visibly shifted from the benign reference distribution on
+discriminative features like `Packet Length Std` and `Flow IAT Max`.
+
+The `.pkl` artifact is gitignored — each developer regenerates it
+locally from their fitted pipeline.
+
 The sample CSV and the SQLite database file are gitignored — each developer produces their own from their local CICIDS download.
 
 ## Architecture
@@ -124,6 +145,9 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 - Per-flow timestamps aren't available in the CICIDS ML CSVs. `event_time` is set to ingestion wall-clock.
 - `LogIngest` accepts `is_alert` and `anomaly_score` from clients as a Day-2 seed-data shortcut using CICIDS ground-truth labels. Day 5 removes these fields once the server-side detector produces them.
 - CICIDS Web Attack labels contain a Unicode replacement character (`�`) from a CP1252 → UTF-8 encoding mismatch in the original dataset. Doesn't affect binary classification.
+- Feature selection is manual (15 columns hand-picked from CICIDS's 78). Automated selection via mutual information or variance thresholds is a v2.0 improvement.
+- The feature pipeline drops rows with inf/NaN at fit time (~0.2% of benign rows lost). At transform time, imputation with learned medians is used instead so single-row inference doesn't fail.
+- `Destination Port` is excluded from features to prevent trivial learning (attack ports map directly to attack types). Categorical port encoding is a v2.0 improvement.
 
 ## Roadmap
 
