@@ -7,12 +7,13 @@ object to model/preprocessor.pkl.
 Also prints per-column mean/std of transformed benign vs attack data,
 so we can verify the pipeline discriminates before moving on to Day 4.
 
-Run once from the project root:
+Run once from anywhere (paths are anchored to this file's location,
+not the current working directory):
     python -m scripts.fit_pipeline
 
 Output artifact: model/preprocessor.pkl (gitignored; each developer
-regenerates locally). Same script re-run produces byte-identical output
-given the same input, because the pipeline itself is deterministic.
+regenerates locally). Re-running produces byte-identical output given
+the same input, because the pipeline itself is deterministic.
 """
 from pathlib import Path
 
@@ -20,7 +21,6 @@ import numpy as np
 import pandas as pd
 
 from model.features import FEATURE_COLUMNS, FeaturePipeline
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_PATH = PROJECT_ROOT / "data" / "raw" / "cicids_sample.csv"
@@ -46,8 +46,8 @@ def main() -> None:
 
     print("\nFitting pipeline on benign rows...")
     pipeline = FeaturePipeline().fit(benign)
-    print(f"  Fitted. Learned medians for {len(pipeline.medians)} features.")
-    print(f"  Scaler mean shape: {pipeline.scaler.mean_.shape}")
+    print(f"  Fitted on {pipeline.scaler.n_samples_seen_} clean rows "
+          f"(after inf/NaN drop from {len(benign)} benign rows).")
 
     print("\nTransforming benign and attack subsets for sanity check...")
     X_benign_scaled = pipeline.transform(benign)
@@ -63,22 +63,22 @@ def main() -> None:
         a_std = X_attack_scaled[:, i].std()
         print(
             f"{name:<32} "
-            f"{b_mean:+7.3f} ± {b_std:6.3f}       "
-            f"{a_mean:+7.3f} ± {a_std:6.3f}"
+            f"{b_mean:+7.3f} \u00b1 {b_std:6.3f}       "
+            f"{a_mean:+7.3f} \u00b1 {a_std:6.3f}"
         )
 
     print(f"\nSaving fitted pipeline to {PIPELINE_PATH}...")
-    pipeline.to_file(PIPELINE_PATH)
+    pipeline.save(PIPELINE_PATH)
     size_kb = PIPELINE_PATH.stat().st_size / 1024
     print(f"  Wrote {size_kb:.1f} KB.")
 
-    print("\nRound-trip test: loading pipeline back from disk...")
-    reloaded = FeaturePipeline.from_file(PIPELINE_PATH)
+    print("\nRound-trip check: loading pipeline back from disk...")
+    reloaded = FeaturePipeline.load(PIPELINE_PATH)
     X_reloaded = reloaded.transform(benign)
     if np.allclose(X_benign_scaled, X_reloaded):
         print("  Round-trip identical. Pipeline persists correctly.")
     else:
-        print("  MISMATCH — persisted pipeline behaves differently. Investigate.")
+        print("  MISMATCH \u2014 persisted pipeline behaves differently. Investigate.")
 
 
 if __name__ == "__main__":

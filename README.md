@@ -21,7 +21,7 @@ This project is being built incrementally. The current state is the **foundation
 - Feature engineering pipeline: 15 hand-selected flow-shape features (volume, rate, packet size, timing)
 - StandardScaler-based normalization fitted on benign rows only to prevent training-time data leakage
 - Fitted preprocessing pipeline persisted to disk via `joblib` for reuse at inference time
-- Per-feature discrimination analysis run at fit time — confirms attack rows shift up to +2.4 std devs on packet-length features
+- Per-feature discrimination analysis run at fit time — attack rows shift up to +3.9 std devs on backward packet-length features (Bwd Packet Length Std), confirming directional stats outperform aggregate stats
 
 **Coming next:**
 - Isolation Forest training and evaluation (Day 4)
@@ -145,7 +145,7 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 - Per-flow timestamps aren't available in the CICIDS ML CSVs. `event_time` is set to ingestion wall-clock.
 - `LogIngest` accepts `is_alert` and `anomaly_score` from clients as a Day-2 seed-data shortcut using CICIDS ground-truth labels. Day 5 removes these fields once the server-side detector produces them.
 - CICIDS Web Attack labels contain a Unicode replacement character (`�`) from a CP1252 → UTF-8 encoding mismatch in the original dataset. Doesn't affect binary classification.
-- Feature selection is manual (15 columns hand-picked from CICIDS's 78). Automated selection via mutual information or variance thresholds is a v2.0 improvement.
+- Feature selection is manual (18 columns hand-picked from CICIDS's 78). Automated selection via mutual information or variance thresholds is a v2.0 improvement.
 - The feature pipeline drops rows with inf/NaN at fit time (~0.2% of benign rows lost). At transform time, imputation with learned medians is used instead so single-row inference doesn't fail.
 - `Destination Port` is excluded from features to prevent trivial learning (attack ports map directly to attack types). Categorical port encoding is a v2.0 improvement.
 

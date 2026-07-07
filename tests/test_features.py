@@ -16,8 +16,11 @@ from model.features import FEATURE_COLUMNS, FeaturePipeline
 def _make_benign_df(n_rows: int = 500) -> pd.DataFrame:
     """Produce a synthetic DataFrame with all feature columns.
 
-    Values are deterministic across runs. Different columns get
-    different scales so the standardization is meaningful.
+    Each column is drawn from a different uniform range (scaled by
+    column index) so columns have genuinely different means/variances —
+    this matters for test_transformed_benign_is_zero_mean_unit_std,
+    which would pass trivially if every column held identical values.
+    Seeded for reproducibility across runs and machines.
     """
     rng = np.random.default_rng(seed=42)
     data = {
@@ -49,6 +52,17 @@ def test_transform_before_fit_raises():
         pipeline.transform(_make_benign_df())
 
 
+def test_save_before_fit_raises(tmp_path):
+    pipeline = FeaturePipeline()
+    with pytest.raises(RuntimeError, match="unfitted"):
+        pipeline.save(tmp_path / "should_not_be_written.pkl")
+
+
+def test_load_missing_path_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        FeaturePipeline.load(tmp_path / "nonexistent.pkl")
+
+
 def test_transform_returns_correct_shape():
     df = _make_benign_df(n_rows=200)
     pipeline = FeaturePipeline().fit(df)
@@ -77,13 +91,25 @@ def test_fit_on_too_few_rows_raises():
         pipeline.fit(df)
 
 
+def test_fit_drops_inf_and_nan_rows():
+    """fit() should drop corrupted rows entirely, not impute them —
+    proven by checking the scaler's own record of how many rows it
+    actually saw, not just that fit() ran without error."""
+    df = _make_benign_df(n_rows=150)
+    df.loc[0, "Flow Bytes/s"] = np.inf
+    df.loc[1, "Flow Packets/s"] = np.nan
+
+    pipeline = FeaturePipeline().fit(df)
+
+    assert pipeline.scaler.n_samples_seen_ == 148
+
+
 def test_transform_handles_inf_via_median_imputation():
     """inf values in input should be replaced with medians, not
     propagated to output."""
     df = _make_benign_df(n_rows=500)
     pipeline = FeaturePipeline().fit(df)
 
-    # Introduce inf into every column of a fresh row.
     dirty = _make_benign_df(n_rows=1).copy()
     for col in FEATURE_COLUMNS:
         dirty.at[0, col] = np.inf
@@ -106,15 +132,20 @@ def test_transform_handles_nan_via_median_imputation():
     assert not np.isnan(result).any()
 
 
-def test_to_file_before_fit_raises(tmp_path):
-    pipeline = FeaturePipeline()
-    with pytest.raises(RuntimeError, match="unfitted"):
-        pipeline.to_file(tmp_path / "should_not_be_written.pkl")
+def test_transform_is_independent_across_calls():
+    """Calling transform() on one input shouldn't be affected by a
+    transform() call on different data in between — proves transform
+    only reads fitted state and never mutates it."""
+    pipeline = FeaturePipeline().fit(_make_benign_df(n_rows=500))
 
+    df_a = _make_benign_df(n_rows=5)
+    df_b = _make_benign_df(n_rows=5) * 100  # deliberately different scale
 
-def test_from_file_missing_path_raises(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        FeaturePipeline.from_file(tmp_path / "nonexistent.pkl")
+    out_a_first = pipeline.transform(df_a)
+    _ = pipeline.transform(df_b)
+    out_a_second = pipeline.transform(df_a)
+
+    np.testing.assert_array_equal(out_a_first, out_a_second)
 
 
 def test_save_load_round_trip_is_identical(tmp_path):
@@ -125,8 +156,8 @@ def test_save_load_round_trip_is_identical(tmp_path):
     original_output = pipeline.transform(df)
 
     path = tmp_path / "pipeline.pkl"
-    pipeline.to_file(path)
-    reloaded = FeaturePipeline.from_file(path)
+    pipeline.save(path)
+    reloaded = FeaturePipeline.load(path)
     reloaded_output = reloaded.transform(df)
 
     assert np.allclose(original_output, reloaded_output)
@@ -137,7 +168,7 @@ def test_reloaded_pipeline_is_marked_fitted(tmp_path):
     pipeline = FeaturePipeline().fit(df)
 
     path = tmp_path / "pipeline.pkl"
-    pipeline.to_file(path)
-    reloaded = FeaturePipeline.from_file(path)
+    pipeline.save(path)
+    reloaded = FeaturePipeline.load(path)
 
     assert reloaded.is_fitted is True
