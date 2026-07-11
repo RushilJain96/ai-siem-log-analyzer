@@ -1,8 +1,9 @@
-"""Parse CICIDS 2017 flow rows into our LogEntry schema.
+"""Parse CICIDS 2017 flow rows into our ingest schema.
 
 The CICIDS ML CSVs contain 78 numerical features per flow plus one Label
-column. Our schema stores a small structured subset plus the raw row
-JSON-serialized for forensic replay. This module owns that translation.
+column. Our schema stores a small structured subset, the 18 flow-shape
+features the detector consumes, and the raw row JSON-serialized for
+forensic replay. This module owns that translation.
 
 Known limitations:
 - The ML-ready CICIDS CSVs have IPs stripped for privacy, so source_ip
@@ -17,6 +18,8 @@ import json
 import math
 from datetime import datetime, timezone
 from typing import Any
+
+from model.features import FEATURE_COLUMNS
 
 
 # Column names the parser reads. Whitespace is expected to already be
@@ -56,8 +59,26 @@ def _to_finite_float(value: Any) -> float | None:
     return f
 
 
+def _extract_features(row: dict[str, Any]) -> dict[str, float]:
+    """Pull the 18 model-feature columns out of a raw CICIDS row.
+
+    A column that's missing from the row, or holds inf/NaN, is OMITTED
+    from the result entirely rather than set to None. AnomalyScorer.score()
+    (Day 5) already treats a missing dict key as "impute this from the
+    fitted medians" -- there's no need for a separate representation of
+    "present but invalid" vs. "absent"; they mean the same thing to the
+    scorer, so we don't invent one.
+    """
+    features = {}
+    for col in FEATURE_COLUMNS:
+        value = _to_finite_float(row.get(col))
+        if value is not None:
+            features[col] = value
+    return features
+
+
 def parse_cicids_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Convert one CICIDS 2017 flow row into LogEntry keyword arguments.
+    """Convert one CICIDS 2017 flow row into ingest-schema keyword arguments.
 
     Args:
         row: A mapping representing one row of a CICIDS CSV. Column names
@@ -65,12 +86,15 @@ def parse_cicids_row(row: dict[str, Any]) -> dict[str, Any]:
             before writing to disk).
 
     Returns:
-        A dict ready to pass as **kwargs to crud.create_log_entry(). Fields
-        not derivable from CICIDS (IPs, protocol, per-flow timestamp) are
-        set to None.
+        A dict matching api.routes.logs.LogIngest's fields (this is what
+        scripts/ingest_sample.py POSTs as the request body). Fields not
+        derivable from CICIDS (IPs, protocol, per-flow timestamp) are set
+        to None. is_alert and anomaly_score are NOT included -- the
+        server computes those from `features` (Day 5); this module has
+        no opinion on them, even though CICIDS's ground-truth Label
+        would make that tempting.
     """
     label = str(row.get(_LABEL_COL, "")).strip()
-    is_alert = label != "BENIGN" and label != ""
 
     duration_micros = _to_finite_int(row.get(_DURATION_COL))
     duration_seconds = duration_micros / 1_000_000 if duration_micros is not None else None
@@ -89,8 +113,7 @@ def parse_cicids_row(row: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": duration_seconds,
         "flag": None,
         "raw_payload": json.dumps(_json_safe(row)),
-        "anomaly_score": None,
-        "is_alert": is_alert,
+        "features": _extract_features(row),
     }
 
 

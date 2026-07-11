@@ -2,8 +2,8 @@
 
 Each test constructs a small dict representing a CICIDS row (or a
 deliberately broken one) and verifies the parser produces the expected
-LogEntry kwargs. Tests are isolated — no filesystem, no database, no
-HTTP. Fast.
+LogIngest-shaped kwargs. Tests are isolated — no filesystem, no
+database, no HTTP. Fast.
 """
 import json
 import math
@@ -29,27 +29,23 @@ def _make_row(**overrides) -> dict:
     return baseline
 
 
-def test_benign_row_is_not_alert():
+def test_benign_row_event_type_is_benign():
     parsed = parse_cicids_row(_make_row(Label="BENIGN"))
-    assert parsed["is_alert"] is False
     assert parsed["event_type"] == "BENIGN"
 
 
-def test_attack_row_is_alert():
+def test_attack_row_event_type_is_label():
     parsed = parse_cicids_row(_make_row(Label="DoS Hulk"))
-    assert parsed["is_alert"] is True
     assert parsed["event_type"] == "DoS Hulk"
 
 
 def test_label_whitespace_is_stripped():
     parsed = parse_cicids_row(_make_row(Label="  BENIGN  "))
     assert parsed["event_type"] == "BENIGN"
-    assert parsed["is_alert"] is False
 
 
-def test_empty_label_is_not_alert():
+def test_empty_label_event_type_is_none():
     parsed = parse_cicids_row(_make_row(Label=""))
-    assert parsed["is_alert"] is False
     assert parsed["event_type"] is None
 
 
@@ -91,9 +87,47 @@ def test_missing_ip_fields_are_none():
     assert parsed["flag"] is None
 
 
-def test_anomaly_score_is_none_at_parse_time():
+def test_parsed_row_has_no_is_alert_or_anomaly_score_keys():
+    """The parser must not produce these -- Day 5's server-side detector
+    computes them from `features`, not the CICIDS ground-truth Label,
+    even though the label would make that tempting to shortcut."""
     parsed = parse_cicids_row(_make_row(Label="DoS Hulk"))
-    assert parsed["anomaly_score"] is None
+    assert "is_alert" not in parsed
+    assert "anomaly_score" not in parsed
+
+
+def test_features_extracts_present_columns():
+    row = _make_row(**{"Flow Duration": 500_000, "SYN Flag Count": 3})
+    parsed = parse_cicids_row(row)
+    assert parsed["features"]["Flow Duration"] == 500_000.0
+    assert parsed["features"]["SYN Flag Count"] == 3.0
+
+
+def test_features_values_are_floats():
+    row = _make_row(**{"SYN Flag Count": 3})
+    parsed = parse_cicids_row(row)
+    assert isinstance(parsed["features"]["SYN Flag Count"], float)
+
+
+def test_features_omits_columns_missing_from_row():
+    """The baseline row only overlaps FEATURE_COLUMNS on Flow Duration --
+    everything else should simply be absent from the dict, not None."""
+    parsed = parse_cicids_row(_make_row())
+    assert "Flow Duration" in parsed["features"]
+    assert "SYN Flag Count" not in parsed["features"]
+    assert "RST Flag Count" not in parsed["features"]
+
+
+def test_features_omits_inf_values():
+    row = _make_row(**{"Flow Bytes/s": math.inf})
+    parsed = parse_cicids_row(row)
+    assert "Flow Bytes/s" not in parsed["features"]
+
+
+def test_features_omits_nan_values():
+    row = _make_row(**{"Flow Packets/s": math.nan})
+    parsed = parse_cicids_row(row)
+    assert "Flow Packets/s" not in parsed["features"]
 
 
 def test_event_time_is_recent_utc_datetime():
