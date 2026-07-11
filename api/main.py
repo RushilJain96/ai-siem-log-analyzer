@@ -15,6 +15,7 @@ from api.routes import logs, stats
 from core.config import settings
 from core.logging import configure_logging
 from db.database import SessionLocal, init_db
+from model.inference import AnomalyScorer
 
 # Configure logging BEFORE creating the FastAPI app. Uvicorn's own
 # loggers come up during app instantiation; if we configure logging
@@ -28,14 +29,41 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup and shutdown lifecycle hooks.
 
-    Runs init_db() once at startup. Anything we needed to clean up
-    on shutdown would go after the yield.
+    Runs init_db() once at startup, and tries to load the fitted
+    anomaly detector once here too -- loading pickled sklearn objects
+    per-request would be slow and wasteful, so it happens exactly once
+    and is stored on app.state for routes to read via Depends(get_scorer).
+
+    model/preprocessor.pkl and model/isolation_forest.pkl are gitignored
+    (each developer/CI-run regenerates them locally by running
+    scripts/fit_pipeline.py and scripts/train_detector.py against a real
+    CICIDS download) -- a fresh clone or CI won't have them. That's not
+    a startup failure: the API still serves ingest/list/stats, it just
+    can't score anomalies until those artifacts exist. app.state.scorer
+    stays None in that case, and /logs/ingest leaves is_alert/
+    anomaly_score at their defaults for every entry.
+
+    Anything we needed to clean up on shutdown would go after the yield.
     """
     logger.info(
         "Application starting",
         extra={"app_name": settings.app_name, "env": settings.app_env},
     )
     init_db()
+
+    try:
+        app.state.scorer = AnomalyScorer.load_default()
+        logger.info("Anomaly detector loaded; /logs/ingest will score entries")
+    except FileNotFoundError:
+        app.state.scorer = None
+        logger.warning(
+            "No trained model found (model/preprocessor.pkl / "
+            "model/isolation_forest.pkl missing) -- /logs/ingest will "
+            "accept logs but skip anomaly detection. Run "
+            "scripts/fit_pipeline.py and scripts/train_detector.py to "
+            "enable it."
+        )
+
     yield
     logger.info("Application shutting down")
 

@@ -1,12 +1,13 @@
 """Log-related API routes."""
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from db.crud import create_log_entry, get_logs
 from db.database import get_db
+from model.inference import AnomalyScorer
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
@@ -15,16 +16,29 @@ class LogIngest(BaseModel):
     """Shape of an incoming log entry.
 
     All structured fields are optional except event_time — different log
-    sources provide different subsets. Day 1 stores whatever is sent;
-    parsing and feature engineering (Day 2-3) will normalize across
-    sources before insertion in later iterations.
+    sources provide different subsets.
 
-    is_alert and anomaly_score are accepted from clients ONLY during the
-    Day 2 seed-data phase, where CICIDS ground-truth labels are used to
-    populate /stats with meaningful numbers before the ML detector is
-    wired in. Day 5 removes these fields from LogIngest so that only the
-    server-side detector can set them.
+    is_alert and anomaly_score are NOT accepted from clients (Day 5) —
+    accepting them was a Day 2 seed-data shortcut using CICIDS
+    ground-truth labels to populate /stats before the detector existed.
+    A caller asserting its own traffic is safe is a trust-boundary
+    violation for an intrusion-detection API; only the server-side
+    detector may set these now, via `features`.
+
+    `features` holds whichever of the 18 flow-shape columns the caller
+    can supply (see model.features.FEATURE_COLUMNS) — deliberately a
+    dict, not 18 flat fields, so log sources that aren't CICIDS-flow
+    shaped can still be ingested and stored, just without a score.
+    Missing/omitted keys are imputed by the fitted pipeline, same as at
+    training time (see model/inference.py).
+
+    extra="forbid": a caller still sending is_alert/anomaly_score in the
+    request body gets a loud 422, not a silently dropped field — for a
+    field that used to gate security-relevant behavior, failing loud
+    beats failing quiet.
     """
+    model_config = {"extra": "forbid"}
+
     event_time: datetime
     source_ip: str | None = Field(default=None, max_length=45)
     destination_ip: str | None = Field(default=None, max_length=45)
@@ -34,8 +48,7 @@ class LogIngest(BaseModel):
     duration_seconds: float | None = None
     flag: str | None = Field(default=None, max_length=16)
     raw_payload: str | None = None
-    is_alert: bool = False
-    anomaly_score: float | None = None
+    features: dict[str, float] | None = None
 
 
 class LogResponse(BaseModel):
@@ -56,6 +69,16 @@ class LogResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def get_scorer(request: Request) -> AnomalyScorer | None:
+    """Yield the AnomalyScorer loaded at startup (api/main.py's
+    lifespan), or None if no trained model was available there.
+
+    A FastAPI dependency, same pattern as get_db, so tests can override
+    it the same way: app.dependency_overrides[get_scorer] = ...
+    """
+    return request.app.state.scorer
+
+
 @router.post(
     "/ingest",
     response_model=LogResponse,
@@ -64,14 +87,27 @@ class LogResponse(BaseModel):
 def ingest_log(
     payload: LogIngest,
     db: Session = Depends(get_db),
+    scorer: AnomalyScorer | None = Depends(get_scorer),
 ) -> LogResponse:
-    """Accept a log entry, persist it, return the stored row.
+    """Accept a log entry, score it, persist it, return the stored row.
 
-    Day 1: pure persistence. Day 5 wires this through the feature
-    pipeline and Isolation Forest detector before returning, populating
-    anomaly_score and is_alert.
+    Scoring only happens if BOTH a trained model is loaded AND the
+    caller supplied `features` — either one missing means is_alert
+    stays False and anomaly_score stays None. That's "detection
+    unavailable for this entry," not an error: a log source that can't
+    supply flow-shape stats should still be ingestable.
     """
-    entry = create_log_entry(db, **payload.model_dump())
+    fields = payload.model_dump(exclude={"features"})
+
+    if scorer is not None and payload.features:
+        result = scorer.score(payload.features)
+        fields["is_alert"] = result["is_alert"]
+        fields["anomaly_score"] = result["anomaly_score"]
+    else:
+        fields["is_alert"] = False
+        fields["anomaly_score"] = None
+
+    entry = create_log_entry(db, **fields)
     return LogResponse.model_validate(entry)
 
 
