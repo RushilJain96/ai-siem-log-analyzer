@@ -4,16 +4,16 @@
 
 [![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
 
-## Status — Day 5 of 10
+## Status — Day 6 of 10
 
-This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), and now **live detection wired into the API**. The dashboard is still upcoming.
+This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, and **alert triage** (severity tiers and filtering). The dashboard is still upcoming.
 
 **Working today:**
 - FastAPI service with auto-generated OpenAPI docs at `/docs`
 - SQLite persistence layer using SQLAlchemy 2.0
-- Endpoints: `POST /logs/ingest`, `GET /logs`, `GET /stats`, `GET /health`
+- Endpoints: `POST /logs/ingest`, `GET /logs` (with filters), `GET /logs/alerts`, `GET /stats`, `GET /health`
 - Structured JSON logging configured via environment variables
-- pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, and end-to-end detection tests (95 tests total)
+- pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, end-to-end detection, severity, and alert-filtering tests (126 tests total)
 - GitHub Actions CI running tests on every push
 - Chunked sampler producing a class-aware sample from the eight CICIDS 2017 CSVs: benign rows at a flat 2%, attack rows at 2% or a 300-row-per-class floor (whichever is larger) — a Day 4 fix, since a flat 2% was silently reducing rare attack classes (Heartbleed, Infiltration) to statistical noise or zero rows
 - CICIDS row parser handling the dataset's known quirks (leading whitespace in column names, `inf`/`NaN` in flow-rate columns, missing IPs)
@@ -28,9 +28,11 @@ This project is being built incrementally. The current state covers the **founda
 - `POST /logs/ingest` now runs every entry through the trained detector: `AnomalyScorer` (`model/inference.py`) composes `FeaturePipeline` + `Detector` into one scoring call, loaded once at app startup and injected via FastAPI's dependency system — same pattern as the DB session, not reloaded per-request
 - Closed a real trust-boundary gap: `is_alert`/`anomaly_score` can no longer be set by the client. `LogIngest` now rejects them outright (`extra="forbid"` → a loud 422, not a silently dropped field) instead of trusting caller-supplied labels
 - `features: dict[str, float]` replaces the old ground-truth-label shortcut. A partial or empty features dict degrades gracefully via median imputation (reusing Day 3's logic, built for exactly this case); a missing trained model degrades gracefully too — the API still starts and ingests, just skips scoring and logs a warning
+- Severity tiers (`low`/`medium`/`high`/`critical`) derived from `anomaly_score` in `model/severity.py` — computed on read, never stored (one source of truth for the cutoffs), and `null` for non-alerts. The `high` cutoff (0.5) is anchored to the model's own calibrated decision boundary from Day 4
+- `GET /logs` gains composable filters — `is_alert`, `severity`, and a `start_time`/`end_time` window — plus a dedicated `GET /logs/alerts` view ordered most-anomalous-first for triage (a convenience shortcut for the common `?is_alert=true` case)
+- `/stats` gains a per-severity alert breakdown (`alerts_by_severity`) for at-a-glance triage load
 
 **Coming next:**
-- Alert filtering and severity (Day 6)
 - PostgreSQL + Docker (Day 8)
 - Real-time WebSocket dashboard (Day 9)
 - Railway deployment (Day 10)
@@ -155,6 +157,26 @@ all (or no trained model loaded) leaves `is_alert: false` and
 `anomaly_score: null`, same as every other field the client doesn't
 control.
 
+### Triaging alerts
+
+Once logs are scored, query them by urgency:
+
+```bash
+# Alerts, most-anomalous first (critical at the top)
+curl "http://localhost:8000/logs/alerts?limit=5"
+
+# Just the critical tier
+curl "http://localhost:8000/logs?severity=critical"
+
+# Per-severity breakdown
+curl http://localhost:8000/stats
+# {"total_logs": 2000, "total_alerts": 235, "alert_rate": 0.1175,
+#  "alerts_by_severity": {"low": 95, "medium": 48, "high": 83, "critical": 9}}
+```
+
+Severity is `low`/`medium`/`high`/`critical` for alerts, `null` for
+non-alerts. An unknown `severity=` value is rejected with a 422.
+
 ## Model evaluation
 
 - **Correction vs. the original project doc:** `contamination=0.01`, not `0.1` — it's sklearn's training-time noise allowance for the benign-only fit, not real-world attack prevalence (~19.6% in full CICIDS-2017). Its exact value turns out not to affect final tuned performance at all (see full writeup for why).
@@ -200,6 +222,7 @@ model/          ML pipeline
   features.py   FeaturePipeline — fit/transform/save/load
   detector.py   Detector — Isolation Forest wrapper, scoring, evaluation
   inference.py  AnomalyScorer — composes FeaturePipeline+Detector for live /logs/ingest scoring
+  severity.py   Maps anomaly_score → low/medium/high/critical tiers
 scripts/        Operational scripts (not run in CI; touch real data)
   sample_cicids.py    Class-aware sampling from raw CICIDS CSVs
   fit_pipeline.py     Fits FeaturePipeline, saves model/preprocessor.pkl
@@ -222,6 +245,11 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 
 ## Known limitations
 
+- Severity reflects **anomaly magnitude, not ground-truth maliciousness** — a limitation of unsupervised anomaly detection surfacing at the triage layer:
+  - The detector learns "normal" from *typical* benign traffic, so an unusual-but-legitimate flow (e.g. a ~1.5 MB file transfer over ~100s) is genuinely far from that baseline.
+  - Such a flow can therefore score `critical`, right next to real attacks — the model flags "statistically weird," not "malicious."
+  - Observed directly in live testing: several top-scoring `critical` alerts were benign large transfers.
+  - Mitigation (analyst feedback loop / mark-as-false-positive, or a supervised re-ranking layer) is a v2.0 item.
 - SQLite strips timezone info on `DateTime(timezone=True)` columns — `event_time` round-trips as a naive datetime. Postgres (Day 8) will fix this.
 - No authentication on any endpoint. Adding auth is a v2.0 item; the threat model for the portfolio scope is "trusted localhost client only."
 - CICIDS 2017's MachineLearningCSV files have IP addresses stripped for privacy, so `source_ip` and `destination_ip` are always `null` in ingested rows. Would require `GeneratedLabelledFlows` or raw PCAPs to recover. This is also why per-source, cross-flow features (which would likely help detect PortScan and credential brute-forcing — see [Model evaluation](#model-evaluation)) aren't feasible with this dataset variant.
@@ -237,6 +265,7 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 
 See the Day 1-of-10 status above for what's built and what's coming. v2.0 candidates (after the core 10-day build is shipped):
 
+- Analyst feedback loop: mark alerts as false positives and feed that back into scoring/re-ranking, so benign outliers (large legitimate transfers) stop surfacing as critical — the mitigation for the severity limitation noted above
 - Neural Network Autoencoder as an alternative detector to compare against Isolation Forest
 - Cross-flow / per-source features (connection rate, distinct-port count in a time window) to address the PortScan and brute-force blind spot — blocked until a CICIDS variant with source IPs, or a different dataset, is used
 - Ingesting real, self-captured system/network logs instead of CICIDS replay — would need a collector/agent that reshapes live traffic into the `/logs/ingest` schema (`event_time`, `source_ip`, `protocol`, `features`, etc.); the schema is designed to be general enough to support this later, but no capture pipeline exists yet
