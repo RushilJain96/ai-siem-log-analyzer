@@ -1,15 +1,32 @@
 """Log-related API routes."""
 from datetime import datetime
+from enum import Enum
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from db.crud import create_log_entry, get_logs
+from db.crud import create_log_entry, get_alerts, get_logs
 from db.database import get_db
+from db.models import LogEntry
 from model.inference import AnomalyScorer
+from model.severity import severity_for
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+
+
+class Severity(str, Enum):
+    """Alert severity tiers, accepted as a query param.
+
+    A str Enum so FastAPI validates it automatically: an unknown value
+    (?severity=banana) yields a 422 before any handler runs, rather
+    than a silent empty result — consistent with the fail-loud stance
+    from Day 5's LogIngest.
+    """
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
 
 
 class LogIngest(BaseModel):
@@ -52,7 +69,12 @@ class LogIngest(BaseModel):
 
 
 class LogResponse(BaseModel):
-    """Shape returned for any GET on a log entry."""
+    """Shape returned for any GET on a log entry.
+
+    `severity` is DERIVED from anomaly_score + is_alert at response time
+    (see build_log_response), never stored — one source of truth for the
+    tier cutoffs. Null for non-alerts.
+    """
     id: int
     event_time: datetime
     created_at: datetime
@@ -65,8 +87,25 @@ class LogResponse(BaseModel):
     flag: str | None
     anomaly_score: float | None
     is_alert: bool
+    severity: str | None
 
     model_config = {"from_attributes": True}
+
+
+def build_log_response(entry: LogEntry) -> LogResponse:
+    """Build a LogResponse from an ORM row, computing severity.
+
+    The ORM object has no `severity` attribute (it's not a column), so
+    model_validate alone can't fill it — we compute it here from the
+    stored anomaly_score + is_alert. Every place that returns a
+    LogResponse goes through this, so the derivation happens in exactly
+    one spot.
+    """
+    return LogResponse(
+        **{field: getattr(entry, field) for field in LogResponse.model_fields
+           if field != "severity"},
+        severity=severity_for(entry.anomaly_score, entry.is_alert),
+    )
 
 
 def get_scorer(request: Request) -> AnomalyScorer | None:
@@ -108,7 +147,27 @@ def ingest_log(
         fields["anomaly_score"] = None
 
     entry = create_log_entry(db, **fields)
-    return LogResponse.model_validate(entry)
+    return build_log_response(entry)
+
+
+@router.get("/alerts", response_model=list[LogResponse])
+def list_alerts(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+) -> list[LogResponse]:
+    """Return flagged alerts, most-anomalous first.
+
+    A convenience view for the single most common analyst action —
+    "show me what fired" — ordered by anomaly_score descending so
+    critical/high alerts sit at the top. Equivalent to
+    `GET /logs?is_alert=true` but sorted for triage-by-urgency rather
+    than recency.
+
+    NOTE: registered before the "" route so "/logs/alerts" isn't
+    swallowed as a path; FastAPI matches routes in declaration order.
+    """
+    rows = get_alerts(db, limit=limit)
+    return [build_log_response(r) for r in rows]
 
 
 @router.get("", response_model=list[LogResponse])
@@ -116,15 +175,29 @@ def list_logs(
     limit: int = 100,
     skip: int = 0,
     source_ip: str | None = None,
+    is_alert: bool | None = None,
+    severity: Severity | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
     db: Session = Depends(get_db),
 ) -> list[LogResponse]:
-    """Return stored logs, newest-ingested first.
+    """Return stored logs, newest-ingested first, with optional filters.
 
-    Supports pagination via limit/skip and optional filtering by
-    source IP. Day 6 adds time-range and severity filters.
+    Filters (all optional, ANDed together): source_ip, is_alert,
+    severity (low/medium/high/critical — an invalid value is rejected
+    with 422 by the Severity enum), and a created_at window via
+    start_time (inclusive) / end_time (exclusive).
     """
-    # crud.get_logs handles the filter and limit; skip is applied below
+    # crud.get_logs handles filters and limit; skip is applied below
     # to keep the CRUD layer small. We trade slight inefficiency at
     # the route level for a thinner data layer.
-    rows = get_logs(db, limit=limit + skip, source_ip=source_ip)
-    return [LogResponse.model_validate(r) for r in rows[skip:]]
+    rows = get_logs(
+        db,
+        limit=limit + skip,
+        source_ip=source_ip,
+        is_alert=is_alert,
+        severity=severity.value if severity is not None else None,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    return [build_log_response(r) for r in rows[skip:]]

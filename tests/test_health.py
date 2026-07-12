@@ -68,6 +68,7 @@ def test_stats_reflects_ingested_logs(client):
         "total_logs": 0,
         "total_alerts": 0,
         "alert_rate": 0.0,
+        "alerts_by_severity": {"low": 0, "medium": 0, "high": 0, "critical": 0},
     }
 
     # Ingest two logs
@@ -83,6 +84,7 @@ def test_stats_reflects_ingested_logs(client):
     assert body["total_logs"] == 2
     assert body["total_alerts"] == 0
     assert body["alert_rate"] == 0.0
+    assert body["alerts_by_severity"] == {"low": 0, "medium": 0, "high": 0, "critical": 0}
 
 
 def test_ingest_validates_event_time_required(client):

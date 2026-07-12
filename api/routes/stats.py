@@ -14,9 +14,11 @@ class StatsResponse(BaseModel):
     total_logs: int
     total_alerts: int
     alert_rate: float
+    alerts_by_severity: dict[str, int]
 
 
 @router.get("", response_model=StatsResponse)
 def read_stats(db: Session = Depends(get_db)) -> StatsResponse:
-    """Return summary metrics for the SIEM dashboard."""
+    """Return summary metrics for the SIEM dashboard, including a
+    per-severity breakdown of alerts (low/medium/high/critical)."""
     return StatsResponse(**get_stats(db))
