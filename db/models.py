@@ -62,5 +62,11 @@ class LogEntry(Base):
     raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Anomaly detection output. Both null until the detector runs.
-    anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # anomaly_score is indexed because Day 6 made it a query+sort key:
+    # get_alerts() orders by it, the severity filter range-scans it, and
+    # get_stats()'s per-tier breakdown counts over score ranges. Indexing
+    # by actual query pattern, same as is_alert/created_at/event_time.
+    anomaly_score: Mapped[float | None] = mapped_column(
+        Float, nullable=True, index=True
+    )
     is_alert: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
