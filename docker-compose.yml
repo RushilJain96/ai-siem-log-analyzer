@@ -1,0 +1,60 @@
+# Local Postgres + app stack for the SIEM API (Day 8).
+#
+#   docker compose up --build
+#
+# The API talks to Postgres over the compose network using the service
+# name `db` as the hostname — no code change vs. SQLite, only the
+# DATABASE_URL differs (the payoff of keeping DATABASE_URL the single
+# 12-factor knob).
+#
+# NOTE: the credentials below are local-development defaults. Real
+# secrets come from the deployment platform's env, never a committed
+# file — this compose file is for `localhost` only.
+name: ai-siem-log-analyzer
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-siem}
+      POSTGRES_USER: ${POSTGRES_USER:-siem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-siem_local_only}
+    volumes:
+      # Named volume so data survives `docker compose down` (but not
+      # `down -v`). Without it, every restart starts with an empty DB.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # The api's depends_on waits on THIS, closing the "app starts
+      # before the DB is ready" race. $$ escapes to a literal $ so the
+      # var is read from the container's own env at runtime.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # SQLAlchemy URL pointing at the `db` service. The ONLY thing that
+      # changes to move off SQLite.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-siem}:${POSTGRES_PASSWORD:-siem_local_only}@db:5432/${POSTGRES_DB:-siem}
+      APP_ENV: docker
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_NAME: ${APP_NAME:-siem-log-analyzer}
+    ports:
+      - "8000:8000"
+    volumes:
+      # Read-only mount of the local model directory. If preprocessor.pkl
+      # and isolation_forest.pkl exist locally (i.e. you've trained), the
+      # container picks them up and scores live; if not, it starts anyway
+      # and skips detection (the Day 5 graceful-degradation path). Nothing
+      # is baked into the image. The container's own /health HEALTHCHECK
+      # is declared in the Dockerfile, so it isn't repeated here.
+      - ./model:/app/model:ro
+
+volumes:
+  postgres_data:

@@ -1,0 +1,64 @@
+# Keep the build context small and keep secrets/artifacts out of the image.
+# The Dockerfile does `COPY . .`, so anything not excluded here lands in
+# the image — this file is the guard.
+
+# --- Secrets: never bake into an image ---
+.env
+.env.*
+!.env.example
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Python runtime junk ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Data and model artifacts (gigabytes / regenerated locally) ---
+# Models are provided at runtime via a volume mount (see docker-compose),
+# not baked in; CICIDS data never belongs in an image.
+data/
+*.pkl
+*.joblib
+
+# --- Local databases ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Tests: not needed to RUN the app (CI runs them separately) ---
+tests/
+
+# --- Git and CI metadata ---
+.git/
+.github/
+.gitignore
+
+# --- Editor / OS junk ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Docs (the large project .docx especially) ---
+docs/
+
+# --- Throwaway diagnostics that live in project root ---
+attack_type_recall.py
+check_*.py
+manual_check.py
+body*.json
+
+# --- Stray local temp files/dirs (can be unreadable to the build sender) ---
+.test_tmp
+*.tmp
+tmp/
