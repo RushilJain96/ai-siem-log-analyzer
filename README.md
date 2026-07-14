@@ -4,13 +4,13 @@
 
 [![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
 
-## Status — Day 6 of 10
+## Status — Day 8 of 10
 
-This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, and **alert triage** (severity tiers and filtering). The dashboard is still upcoming.
+This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, **alert triage** (severity tiers and filtering), and a **containerized Postgres deployment** (Docker Compose). The dashboard is still upcoming.
 
 **Working today:**
 - FastAPI service with auto-generated OpenAPI docs at `/docs`
-- SQLite persistence layer using SQLAlchemy 2.0
+- SQLAlchemy 2.0 persistence — SQLite for local dev, **PostgreSQL via Docker Compose** (Day 8), swapped by a single `DATABASE_URL` change with zero DB-layer code changes
 - Endpoints: `POST /logs/ingest`, `GET /logs` (with filters), `GET /logs/alerts`, `GET /stats`, `GET /health`
 - Structured JSON logging configured via environment variables
 - pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, end-to-end detection, severity, and alert-filtering tests (126 tests total)
@@ -31,9 +31,11 @@ This project is being built incrementally. The current state covers the **founda
 - Severity tiers (`low`/`medium`/`high`/`critical`) derived from `anomaly_score` in `model/severity.py` — computed on read, never stored (one source of truth for the cutoffs), and `null` for non-alerts. The `high` cutoff (0.5) is anchored to the model's own calibrated decision boundary from Day 4
 - `GET /logs` gains composable filters — `is_alert`, `severity`, and a `start_time`/`end_time` window — plus a dedicated `GET /logs/alerts` view ordered most-anomalous-first for triage (a convenience shortcut for the common `?is_alert=true` case)
 - `/stats` gains a per-severity alert breakdown (`alerts_by_severity`) for at-a-glance triage load
+- `anomaly_score` column indexed (Day 7) — it became a query+sort key on Day 6 (alerts ordering, severity range filters, the stats breakdown), so it's indexed by actual query pattern
+- **Dockerized (Day 8):** a `Dockerfile` (non-root user, layer-cached deps, stdlib `/health` healthcheck) and `docker-compose.yml` bringing up the app + Postgres together — the app waits on a Postgres healthcheck before starting (`depends_on: service_healthy`). The trained model is provided via a read-only volume mount, so detection runs in-container if the `.pkl` exist locally and gracefully skips if not
+- **Runs on PostgreSQL** with no code changes beyond `DATABASE_URL` — `db/database.py` needed only `pool_pre_ping` for networked-connection resilience. Verified live: data persists across a full `docker compose down`/`up` in a named Postgres volume, and timezone-aware timestamps round-trip correctly (the SQLite naive-datetime limitation is resolved on Postgres)
 
 **Coming next:**
-- PostgreSQL + Docker (Day 8)
 - Real-time WebSocket dashboard (Day 9)
 - Railway deployment (Day 10)
 
@@ -71,6 +73,28 @@ pytest tests/ -v
 ```
 
 Tests use an in-memory SQLite database — no setup required, no real database touched.
+
+## Running with Docker (Postgres)
+
+The API also runs containerized against PostgreSQL, via Docker Compose:
+
+```bash
+docker compose up --build -d      # builds the app image, starts app + Postgres
+docker compose ps                 # wait until both show (healthy)
+docker compose logs api           # startup: "Anomaly detector loaded" or graceful skip
+curl http://localhost:8000/health # {"status":"ok"} — also proves the DB is reachable
+```
+
+Notes:
+- The swap from SQLite is a single `DATABASE_URL` change (compose sets it to
+  `postgresql+psycopg2://...@db:5432/...`) — no application code differs.
+- The trained model is mounted read-only (`./model:/app/model:ro`). If you've
+  run `fit_pipeline` + `train_detector` locally, the container picks up the
+  `.pkl` and scores live; if not, it starts anyway and skips detection.
+- Data persists in a named volume across `docker compose down`/`up`. Use
+  `docker compose down -v` to wipe it.
+- Credentials in `docker-compose.yml` are local-development defaults only —
+  real secrets come from the deployment platform's environment.
 
 ## Loading sample data
 
@@ -230,16 +254,20 @@ scripts/        Operational scripts (not run in CI; touch real data)
 tests/          pytest suite (synthetic data only — CI has no real CICIDS CSV)
 docs/           Deeper writeups linked from this README (model evaluation, etc.)
 .github/        GitHub Actions CI
+Dockerfile          App image (non-root, healthcheck)
+docker-compose.yml  App + Postgres stack for local containerized runs
+.dockerignore       Keeps secrets/data/models out of the build context
 ```
 
-Configuration is read exclusively through `core/config.py`. The rest of the codebase imports `settings` rather than touching `os.environ`. This means switching from local SQLite to production Postgres is a one-line change in `.env`.
+Configuration is read exclusively through `core/config.py`. The rest of the codebase imports `settings` rather than touching `os.environ`. This is what made the Day 8 SQLite→Postgres swap a one-line `DATABASE_URL` change with no application code touched.
 
 ## Tech stack
 
 - **Backend:** FastAPI (ASGI), built on Starlette
 - **ORM:** SQLAlchemy 2.0 with the typed `Mapped[T]` / `mapped_column()` syntax
 - **Validation:** Pydantic v2
-- **Database:** SQLite (dev), PostgreSQL planned for production
+- **Database:** SQLite (local dev), PostgreSQL (via Docker Compose)
+- **Containers:** Docker + Docker Compose (app + Postgres)
 - **Testing:** pytest with FastAPI's TestClient (httpx-backed)
 - **CI:** GitHub Actions running pytest on every push
 
@@ -250,7 +278,7 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
   - Such a flow can therefore score `critical`, right next to real attacks — the model flags "statistically weird," not "malicious."
   - Observed directly in live testing: several top-scoring `critical` alerts were benign large transfers.
   - Mitigation (analyst feedback loop / mark-as-false-positive, or a supervised re-ranking layer) is a v2.0 item.
-- SQLite strips timezone info on `DateTime(timezone=True)` columns — `event_time` round-trips as a naive datetime. Postgres (Day 8) will fix this.
+- SQLite (the local-dev default) strips timezone info on `DateTime(timezone=True)` columns — `event_time` round-trips as a *naive* datetime. **Resolved on Postgres** (Day 8): running via Docker Compose, timestamps round-trip timezone-aware (verified — `event_time` comes back with a UTC offset). This is a SQLite limitation, not an application one.
 - No authentication on any endpoint. Adding auth is a v2.0 item; the threat model for the portfolio scope is "trusted localhost client only."
 - CICIDS 2017's MachineLearningCSV files have IP addresses stripped for privacy, so `source_ip` and `destination_ip` are always `null` in ingested rows. Would require `GeneratedLabelledFlows` or raw PCAPs to recover. This is also why per-source, cross-flow features (which would likely help detect PortScan and credential brute-forcing — see [Model evaluation](#model-evaluation)) aren't feasible with this dataset variant.
 - Per-flow timestamps aren't available in the CICIDS ML CSVs. `event_time` is set to ingestion wall-clock.
