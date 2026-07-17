@@ -4,18 +4,24 @@ Wires startup/shutdown lifecycle, configures logging, registers route
 modules. Should stay thin — application setup only. Business logic
 belongs in api/routes/, db/crud.py, and model/.
 """
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from api.routes import logs, stats
+from api.realtime import manager
+from api.routes import dashboard, logs, stats
 from core.config import settings
 from core.logging import configure_logging
 from db.database import SessionLocal, init_db
 from model.inference import AnomalyScorer
+
+DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 
 # Configure logging BEFORE creating the FastAPI app. Uvicorn's own
 # loggers come up during app instantiation; if we configure logging
@@ -51,6 +57,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     init_db()
 
+    # Capture the running event loop so the SYNC /logs/ingest route (run
+    # in a worker thread) can schedule WebSocket broadcasts onto it. See
+    # api/realtime.py for why this bridge is needed.
+    manager.bind_loop(asyncio.get_running_loop())
+
     try:
         app.state.scorer = AnomalyScorer.load_default()
         logger.info("Anomaly detector loaded; /logs/ingest will score entries")
@@ -78,12 +89,24 @@ app = FastAPI(
 
 app.include_router(logs.router)
 app.include_router(stats.router)
+app.include_router(dashboard.router)
+
+# Serve the live dashboard as static files at /dashboard (html=True makes
+# /dashboard/ serve index.html). The dashboard is a self-contained
+# HTML/CSS/JS bundle — no build step, no framework — that connects to the
+# /ws WebSocket for the real-time feed.
+if DASHBOARD_DIR.exists():
+    app.mount(
+        "/dashboard",
+        StaticFiles(directory=DASHBOARD_DIR, html=True),
+        name="dashboard",
+    )
 
 
 @app.get("/", tags=["system"])
 def root() -> dict[str, str]:
-    """Point clients at the auto-generated API documentation."""
-    return {"name": settings.app_name, "docs": "/docs"}
+    """Point clients at the docs and the live dashboard."""
+    return {"name": settings.app_name, "docs": "/docs", "dashboard": "/dashboard"}
 
 
 @app.get("/health", tags=["system"])
