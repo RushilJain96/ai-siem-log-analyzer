@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from api.realtime import manager
 from db.crud import create_log_entry, get_alerts, get_logs
 from db.database import get_db
 from db.models import LogEntry
@@ -137,17 +138,43 @@ def ingest_log(
     supply flow-shape stats should still be ingestable.
     """
     fields = payload.model_dump(exclude={"features"})
+    top_features: list[dict] = []
 
     if scorer is not None and payload.features:
         result = scorer.score(payload.features)
         fields["is_alert"] = result["is_alert"]
         fields["anomaly_score"] = result["anomaly_score"]
+        top_features = result["top_features"]
     else:
         fields["is_alert"] = False
         fields["anomaly_score"] = None
 
     entry = create_log_entry(db, **fields)
-    return build_log_response(entry)
+    response = build_log_response(entry)
+
+    # Push this log to any connected dashboards. Fire-and-forget and a
+    # no-op when nobody's watching, so it never affects the ingest
+    # response. We broadcast every log (not just alerts) so the live
+    # stream sees benign traffic too; at production throughput you'd
+    # throttle or split channels, but at demo rates this is fine.
+    _broadcast_log(response, top_features)
+
+    return response
+
+
+def _broadcast_log(response: LogResponse, top_features: list[dict]) -> None:
+    """Fan a just-ingested log out to connected dashboard WebSockets.
+
+    top_features (each feature's standardized deviation from the benign
+    baseline — an interpretable PROXY, not the Isolation Forest's
+    internal attribution; see AnomalyScorer.score) rides along so the
+    dashboard's explanation panel can render without a second request.
+    """
+    message = {
+        "type": "log",
+        "data": {**response.model_dump(mode="json"), "top_features": top_features},
+    }
+    manager.broadcast_threadsafe(message)
 
 
 @router.get("/alerts", response_model=list[LogResponse])
