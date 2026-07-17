@@ -50,14 +50,30 @@ class AnomalyScorer:
         self.pipeline = pipeline
         self.detector = detector
 
+    TOP_FEATURE_COUNT = 5
+
     def score(self, features: dict[str, float]) -> dict:
         """Score one raw feature dict.
 
         Keys missing from `features` are imputed by the pipeline's
         fit-time medians, same as any other NaN value would be.
 
+        `top_features` is an interpretable PROXY for why a row looks
+        anomalous — NOT the Isolation Forest's internal attribution.
+        The forest decides via path length across random splits; there's
+        no per-feature contribution in that mechanism. What we compute
+        instead: the pipeline scales every feature to mean-0/std-1 on
+        BENIGN traffic, so a feature's scaled value is its distance from
+        the benign baseline in standard deviations. The features with the
+        largest absolute scaled value are the ones furthest from normal,
+        which is a genuinely useful analyst signal ("Bwd Packet Length
+        Std is +4.1σ above the learned baseline") — just don't mistake it
+        for SHAP-style model attribution. True IF attribution would need
+        a separate explainer (a v2.0 item).
+
         Returns:
-            {"is_alert": bool, "anomaly_score": float}
+            {"is_alert": bool, "anomaly_score": float,
+             "top_features": [{"feature": str, "deviation": float}, ...]}
         """
         row = {
             col: features.get(col, np.nan) for col in self.pipeline.feature_columns
@@ -65,9 +81,22 @@ class AnomalyScorer:
         df = pd.DataFrame([row])
         X = self.pipeline.transform(df)
         result = self.detector.predict_with_score(X)
+
+        scaled = X[0]
+        ranked = sorted(
+            zip(self.pipeline.feature_columns, scaled),
+            key=lambda pair: abs(pair[1]),
+            reverse=True,
+        )
+        top_features = [
+            {"feature": name, "deviation": round(float(value), 2)}
+            for name, value in ranked[: self.TOP_FEATURE_COUNT]
+        ]
+
         return {
             "is_alert": bool(result["prediction"]),
             "anomaly_score": result["anomaly_score"],
+            "top_features": top_features,
         }
 
     @classmethod

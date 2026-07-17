@@ -47,7 +47,33 @@ def _far_outlier_features() -> dict[str, float]:
 def test_score_returns_expected_keys():
     scorer = _fitted_scorer()
     result = scorer.score(_normal_features())
-    assert set(result.keys()) == {"is_alert", "anomaly_score"}
+    assert set(result.keys()) == {"is_alert", "anomaly_score", "top_features"}
+
+
+def test_top_features_shape_and_ordering():
+    """top_features should be the N most-deviating features, sorted by
+    absolute deviation descending — genuine attribution, not a stub."""
+    scorer = _fitted_scorer()
+    result = scorer.score(_far_outlier_features())
+    top = result["top_features"]
+
+    assert len(top) == scorer.TOP_FEATURE_COUNT
+    assert all(set(item.keys()) == {"feature", "deviation"} for item in top)
+    # every reported feature is a real model column
+    assert all(item["feature"] in FEATURE_COLUMNS for item in top)
+    # sorted by |deviation| descending
+    abs_devs = [abs(item["deviation"]) for item in top]
+    assert abs_devs == sorted(abs_devs, reverse=True)
+
+
+def test_top_features_reflect_the_shifted_columns():
+    """A row shifted far from benign should show large positive
+    deviations — the scaled value IS the standard-deviation distance
+    from the learned benign mean."""
+    scorer = _fitted_scorer()
+    result = scorer.score(_far_outlier_features())
+    # the single most-deviating feature should be well outside normal
+    assert abs(result["top_features"][0]["deviation"]) > 3.0
 
 
 def test_score_types_are_json_safe():
@@ -148,4 +174,4 @@ def test_load_default_succeeds_and_scores(tmp_path):
         pipeline_path=pipeline_path, detector_path=detector_path
     )
     result = scorer.score(_normal_features())
-    assert set(result.keys()) == {"is_alert", "anomaly_score"}
+    assert set(result.keys()) == {"is_alert", "anomaly_score", "top_features"}
