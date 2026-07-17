@@ -4,16 +4,16 @@
 
 [![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
 
-## Status — Day 8 of 10
+## Status — Day 9 of 10
 
-This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, **alert triage** (severity tiers and filtering), and a **containerized Postgres deployment** (Docker Compose). The dashboard is still upcoming.
+This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, **alert triage** (severity tiers and filtering), a **containerized Postgres deployment** (Docker Compose), and a **real-time SOC dashboard** (WebSocket-driven). Cloud deployment is the last remaining piece.
 
 **Working today:**
 - FastAPI service with auto-generated OpenAPI docs at `/docs`
 - SQLAlchemy 2.0 persistence — SQLite for local dev, **PostgreSQL via Docker Compose** (Day 8), swapped by a single `DATABASE_URL` change with zero DB-layer code changes
-- Endpoints: `POST /logs/ingest`, `GET /logs` (with filters), `GET /logs/alerts`, `GET /stats`, `GET /health`
+- Endpoints: `POST /logs/ingest`, `GET /logs` (with filters), `GET /logs/alerts`, `GET /stats`, `GET /model/info`, `GET /health`, `WS /ws`, and the live dashboard at `/dashboard`
 - Structured JSON logging configured via environment variables
-- pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, end-to-end detection, severity, and alert-filtering tests (126 tests total)
+- pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, end-to-end detection, severity, alert-filtering, WebSocket manager, and dashboard-endpoint tests (139 tests total)
 - GitHub Actions CI running tests on every push
 - Chunked sampler producing a class-aware sample from the eight CICIDS 2017 CSVs: benign rows at a flat 2%, attack rows at 2% or a 300-row-per-class floor (whichever is larger) — a Day 4 fix, since a flat 2% was silently reducing rare attack classes (Heartbleed, Infiltration) to statistical noise or zero rows
 - CICIDS row parser handling the dataset's known quirks (leading whitespace in column names, `inf`/`NaN` in flow-rate columns, missing IPs)
@@ -34,10 +34,12 @@ This project is being built incrementally. The current state covers the **founda
 - `anomaly_score` column indexed (Day 7) — it became a query+sort key on Day 6 (alerts ordering, severity range filters, the stats breakdown), so it's indexed by actual query pattern
 - **Dockerized (Day 8):** a `Dockerfile` (non-root user, layer-cached deps, stdlib `/health` healthcheck) and `docker-compose.yml` bringing up the app + Postgres together — the app waits on a Postgres healthcheck before starting (`depends_on: service_healthy`). The trained model is provided via a read-only volume mount, so detection runs in-container if the `.pkl` exist locally and gracefully skips if not
 - **Runs on PostgreSQL** with no code changes beyond `DATABASE_URL` — `db/database.py` needed only `pool_pre_ping` for networked-connection resilience. Verified live: data persists across a full `docker compose down`/`up` in a named Postgres volume, and timezone-aware timestamps round-trip correctly (the SQLite naive-datetime limitation is resolved on Postgres)
+- **Real-time push (Day 9):** a `ConnectionManager` (`api/realtime.py`) fans every ingested log out to connected dashboards over a WebSocket (`WS /ws`). The interesting part: `POST /logs/ingest` is a *sync* route (Starlette runs it in a worker thread, correct for sync SQLAlchemy), while WebSockets live on the event loop — so the broadcast is bridged with `asyncio.run_coroutine_threadsafe` onto the loop captured at startup, fire-and-forget so ingest never blocks. No-ops cleanly when no dashboard is watching
+- **Interpretable per-row signal (not model attribution):** `AnomalyScorer.score()` returns `top_features` — each feature's *standardized deviation from the benign baseline*. Because the pipeline scales to mean-0/std-1 on *benign* traffic, a feature's scaled value *is* its distance from normal in standard deviations, so "Bwd Packet Length Std is +4.1σ above baseline" tells an analyst **where** the row looks unusual. It is deliberately **not** the Isolation Forest's internal reason for isolating the row — the forest decides via path length across random splits, which has no per-feature contribution — and it isn't SHAP-style attribution. True model attribution would need a separate explainer (a v2.0 item); this is an honest proxy, labeled as such in the UI
+- **Live SOC dashboard** at `/dashboard` — a dependency-free (no build step) dark-theme console: KPI cards (incl. *Detected Alerts* and *Avg Anomaly Score* — the raw mean IF score, not a calibrated probability), a live-computed AI Threat Index gauge, real-time log stream with quick severity filters, alerts feed, severity/category/timeline charts, a backend-backed **Log Explorer** (`GET /logs` with severity/IP/time/alert filters) reachable by clicking any severity to drill down, a real Model Status panel (`GET /model/info` reads live detector metadata), an **Observed Source Network Location** map, and a click-through AI Explanation drawer showing each row's largest baseline deviations. The map draws a *real* basemap — Natural Earth country boundaries projected to inline SVG at build time (`dashboard/worldmap.js`), so there's no map dependency or third-party tile call at runtime — and plots each source IP as a severity-coloured dot with a ring that pulses on new critical/high. Panels with no backing data (system health, MITRE ATT&CK, threat-intel feeds) are clearly badged **DEMO**; the map is badged **SIMULATED DATA** because an IP is a network endpoint, not a place, and we have no GeoIP/ASN enrichment yet (CICIDS also strips client IPs) — so a dot's *position* is a deterministic function of its source IP, not a real location. Real city/ASN/network-type enrichment plus a vector basemap (MapLibre) is a planned upgrade, deferred until the positions are real enough to justify it
 
 **Coming next:**
-- Real-time WebSocket dashboard (Day 9)
-- Railway deployment (Day 10)
+- Cloud deployment (Day 10)
 
 ## Quick start
 
@@ -95,6 +97,39 @@ Notes:
   `docker compose down -v` to wipe it.
 - Credentials in `docker-compose.yml` are local-development defaults only —
   real secrets come from the deployment platform's environment.
+
+## Live dashboard
+
+With the API running (and a trained model loaded), open the real-time SOC
+console:
+
+```
+http://localhost:8000/dashboard/
+```
+
+Open it **before** ingesting so you watch logs animate in live, then in
+another terminal:
+
+```bash
+python -m scripts.ingest_sample --count 2000
+```
+
+Every ingested log is pushed over `WS /ws` as a `{"type": "log", ...}`
+frame (all logs, not just alerts), and the dashboard updates the log
+stream, KPIs, threat-index gauge, alerts, and charts in real time. Click
+any log or alert to open the AI Explanation drawer — the "largest
+deviations from benign baseline" there are each feature's real
+standardized σ-distance from the learned baseline (an analyst signal for
+*where* the row is unusual), not mock values and not the model's internal
+attribution. Click any severity to open the Log Explorer, which queries
+`GET /logs` with real filters. The Model Status panel reads live detector
+metadata from `GET /model/info`. Without a trained model the dashboard
+still loads and honestly shows Model Status as "unavailable."
+
+Panels backed by real data: KPIs, threat index, live stream, alerts,
+severity/category/timeline charts, AI explanation, model status. Panels
+badged **DEMO** (mock data, designed for future integration): system
+health, MITRE ATT&CK coverage, threat-intel feed.
 
 ## Loading sample data
 
@@ -233,8 +268,9 @@ Full methodology, both operating-point tables, and the reasoning behind why each
 
 ```
 api/            FastAPI application
-  main.py       App entry, lifespan, routes wired
-  routes/       One file per resource (logs, stats)
+  main.py       App entry, lifespan, routes wired, dashboard mount
+  realtime.py   WebSocket ConnectionManager + sync→async broadcast bridge
+  routes/       One file per resource (logs, stats, dashboard/WS)
 core/           Cross-cutting concerns
   config.py     Env-var-driven settings (12-factor pattern)
   logging.py    Structured JSON logging
@@ -245,8 +281,9 @@ db/             Persistence layer
 model/          ML pipeline
   features.py   FeaturePipeline — fit/transform/save/load
   detector.py   Detector — Isolation Forest wrapper, scoring, evaluation
-  inference.py  AnomalyScorer — composes FeaturePipeline+Detector for live /logs/ingest scoring
+  inference.py  AnomalyScorer — scoring + top baseline-deviation signal
   severity.py   Maps anomaly_score → low/medium/high/critical tiers
+dashboard/      Live SOC dashboard (static, dependency-free HTML/CSS/JS)
 scripts/        Operational scripts (not run in CI; touch real data)
   sample_cicids.py    Class-aware sampling from raw CICIDS CSVs
   fit_pipeline.py     Fits FeaturePipeline, saves model/preprocessor.pkl
@@ -264,6 +301,8 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 ## Tech stack
 
 - **Backend:** FastAPI (ASGI), built on Starlette
+- **Real-time:** WebSockets (FastAPI/Starlette native), sync→async broadcast bridge
+- **Frontend:** dependency-free HTML/CSS/JS (no build step, no framework), dark SOC theme
 - **ORM:** SQLAlchemy 2.0 with the typed `Mapped[T]` / `mapped_column()` syntax
 - **Validation:** Pydantic v2
 - **Database:** SQLite (local dev), PostgreSQL (via Docker Compose)
@@ -288,6 +327,8 @@ Configuration is read exclusively through `core/config.py`. The rest of the code
 - `Destination Port` is excluded from features to prevent trivial learning (attack ports map directly to attack types). Categorical port encoding is a v2.0 improvement.
 - `Detector.save()` persists a plain dict payload (model, config, score_scale, decision_threshold, metadata), while `FeaturePipeline.save()` persists the whole fitted object via `joblib.dump(self)`. Two different persistence conventions for the two model classes — not yet reconciled, tracked as backlog.
 - `RST Flag Count`'s attack-subset standard deviation is ≈0.000 (confirmed across two independently sampled datasets) — a near-constant column for attacks in this sample, not a strong standalone signal despite the nonzero mean shift. Low priority given it's one of 18 features, not worth dropping outright without checking its contribution to the trained forest.
+- The dashboard broadcasts **every** ingested log to all connected clients (so the live stream shows benign traffic too), and every client receives every log (no per-client filtering or auth on `WS /ws`). Fine at demo ingest rates on trusted localhost; at production throughput you'd throttle, sample, or split alert/log channels, and gate the socket behind the same auth the API lacks (a v2.0 item).
+- Several dashboard panels are **DEMO / mock data**, clearly badged as such: system health (CPU/RAM/disk — not measured), MITRE ATT&CK coverage (no real ATT&CK mapping engine — a hand-coded event→technique lookup), and the threat-intel feed (no live IOC integration). They're built to show the intended layout for future integration, not to imply the data is real. Everything else on the dashboard is real backend data.
 
 ## Roadmap
 
