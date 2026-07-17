@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion · AI-Powered SIEM</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='24' r='18' fill='none' stroke='%233b82f6' stroke-width='4' stroke-linecap='round' stroke-dasharray='66 16 30 16' transform='rotate(-42 24 24)'/%3E%3Cellipse cx='24' cy='24' rx='17' ry='6' fill='none' stroke='%2322d3ee' stroke-width='2.4' transform='rotate(-26 24 24)'/%3E%3Ccircle cx='24' cy='24' r='2.4' fill='%23dbeafe'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- ===================== Sidebar ===================== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none">
+            <defs>
+              <linearGradient id="orionMark" x1="6" y1="8" x2="42" y2="42" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#6366f1"/><stop offset="0.55" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/>
+              </linearGradient>
+            </defs>
+            <circle cx="24" cy="24" r="18" stroke="url(#orionMark)" stroke-width="4" stroke-linecap="round" stroke-dasharray="66 16 30 16" transform="rotate(-42 24 24)"/>
+            <ellipse cx="24" cy="24" rx="17" ry="6" stroke="url(#orionMark)" stroke-width="2.4" transform="rotate(-26 24 24)" opacity="0.92"/>
+            <circle cx="24" cy="24" r="2.2" fill="#dbeafe"/>
+            <path d="M35 11l1.5 3.6 3.6 1.5-3.6 1.5-1.5 3.6-1.5-3.6-3.6-1.5 3.6-1.5z" fill="#eaf2ff"/>
+          </svg>
+        </div>
+        <div class="brand-text"><b>ORION</b><small>AI-POWERED SIEM</small></div>
+      </div>
+      <a class="nav-item active" data-target="#sec-overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg><span>Dashboard</span></a>
+      <a class="nav-item" data-target="#sec-stream"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>Live Logs</span></a>
+      <a class="nav-item" data-explorer="1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span>Log Explorer</span></a>
+      <a class="nav-item" data-target="#sec-alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l9 4v6c0 5-3.8 8.5-9 10-5.2-1.5-9-5-9-10V6l9-4z"/></svg><span>Alerts</span></a>
+      <a class="nav-item" data-target="#sec-analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg><span>Analytics</span></a>
+      <a class="nav-item" data-target="#sec-detection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><span>AI Detection</span></a>
+      <a class="nav-item" data-target="#sec-model"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/></svg><span>Model Status</span></a>
+      <a class="nav-item" data-target="#sec-ti"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 6 6 .5-4.5 4 1.5 6-6-3.5-6 3.5 1.5-6L3 8.5 9 8z"/></svg><span>Threat Intel</span><em class="nav-badge">DEMO</em></a>
+      <a class="nav-item" data-target="#sec-map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span>Source Map</span></a>
+      <a class="nav-item" data-soon="Settings — planned for a later build"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1l-.3-2.5H9.5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h4.9l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6c.1-.3.1-.7.1-1z"/></svg><span>Settings</span></a>
+      <div class="sidebar-foot">v0.9 · Day 9 build</div>
+    </aside>
+
+    <!-- ===================== Main ===================== -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn" id="collapseBtn" title="Toggle sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <input id="search" placeholder="Search IP, host, attack type, event, protocol…" />
+        </div>
+        <div class="topbar-right">
+          <span class="conn down" id="conn"><i class="dot"></i><span id="connText">Connecting…</span></span>
+          <button class="icon-btn" title="Notifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></button>
+          <button class="icon-btn" id="themeBtn" title="Toggle theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+          <div class="avatar">RJ</div>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="page-head" id="sec-overview">
+          <h1>Security Overview</h1>
+          <p>Real-time anomaly detection · Isolation Forest</p>
+        </div>
+
+        <!-- KPI cards -->
+        <section class="kpi-row" id="kpiRow"></section>
+
+        <!-- Gauge + live stream -->
+        <section class="split" id="sec-detection">
+          <div class="card gauge-card">
+            <div class="card-head" style="width:100%;padding:0 0 6px"><h3>AI Threat Index</h3><span class="spacer"></span><span class="sub" id="threatTrend">—</span></div>
+            <div class="gauge-wrap">
+              <svg viewBox="0 0 230 150" width="230" height="150">
+                <path d="M20 140 A90 90 0 0 1 210 140" fill="none" stroke="var(--surface-2)" stroke-width="16" stroke-linecap="round"/>
+                <path id="gaugeArc" d="M20 140 A90 90 0 0 1 210 140" fill="none" stroke="url(#gg)" stroke-width="16" stroke-linecap="round" stroke-dasharray="283" stroke-dashoffset="283" style="transition:stroke-dashoffset .8s cubic-bezier(.2,.9,.3,1)"/>
+                <defs><linearGradient id="gg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#22c55e"/><stop offset="0.5" stop-color="#eab308"/><stop offset="0.8" stop-color="#f97316"/><stop offset="1" stop-color="#ef4444"/></linearGradient></defs>
+              </svg>
+              <div class="gauge-val"><div class="g-num" id="threatNum">0</div><div class="g-lab" id="threatLab">MONITORING</div></div>
+            </div>
+            <div class="gauge-legend">
+              <span><i style="background:#22c55e"></i>Low</span><span><i style="background:#eab308"></i>Elevated</span><span><i style="background:#f97316"></i>High</span><span><i style="background:#ef4444"></i>Critical</span>
+            </div>
+          </div>
+
+          <div class="card stream-card" id="sec-stream">
+            <div class="card-head"><h3>Live Log Stream</h3><span class="sub">newest first</span><span class="spacer"></span>
+              <span class="sub" id="streamRate">0 logs/min</span>
+              <button class="chip-btn" id="exploreBtn" title="Open the log explorer / filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4"/></svg>Filter</button>
+            </div>
+            <div class="stream-filters" id="streamFilters">
+              <button class="fchip active" data-sev="">All</button>
+              <button class="fchip" data-sev="critical">Critical</button>
+              <button class="fchip" data-sev="high">High</button>
+              <button class="fchip" data-sev="medium">Medium</button>
+              <button class="fchip" data-sev="low">Low</button>
+              <button class="fchip alerts" data-alerts="1">Alerts only</button>
+            </div>
+            <div class="stream-scroll">
+              <table class="stream">
+                <thead><tr><th>Time</th><th>Event</th><th>Src → Dst</th><th>Proto</th><th>AI Score</th><th>Severity</th></tr></thead>
+                <tbody id="streamBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- Charts -->
+        <section class="chart-row" id="sec-analytics">
+          <div class="card">
+            <div class="card-head"><h3>Severity Distribution</h3></div>
+            <div class="chart-body"><div class="donut-wrap">
+              <svg viewBox="0 0 120 120" width="120" height="120" id="donut"></svg>
+              <div class="donut-legend" id="donutLegend"></div>
+            </div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Attack Categories</h3><span class="sub">live</span></div>
+            <div class="chart-body"><div class="bars" id="catBars"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Alerts Over Time</h3><span class="sub">last 30 buckets</span></div>
+            <div class="chart-body"><svg viewBox="0 0 300 130" width="100%" height="130" id="spark" preserveAspectRatio="none"></svg></div>
+          </div>
+        </section>
+
+        <!-- Alerts + Model/System -->
+        <section class="split" style="grid-template-columns:1fr 360px" id="sec-alerts">
+          <div class="card">
+            <div class="card-head"><h3>Recent Alerts</h3><span class="sub">tap a severity in the donut to drill down</span><span class="spacer"></span><span class="sub" id="alertCount">0 detected</span></div>
+            <div class="alerts-list" id="alertsList"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:var(--gap)">
+            <div class="card" id="sec-model">
+              <div class="card-head"><h3>Model Status</h3><span class="spacer"></span><span class="sub" id="modelStatus">…</span></div>
+              <div class="meta-grid" id="modelMeta"></div>
+              <div class="status-line" id="modelStatusLine"><span class="dot" style="background:var(--text-faint)"></span><span>Loading…</span></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h3>System Health</h3><span class="spacer"></span><span class="demo-badge">DEMO</span></div>
+              <div class="health-row" id="healthRow"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Observed source network location (real basemap; SIMULATED positions) -->
+        <section class="card map-card" id="sec-map">
+          <div class="card-head">
+            <h3>Observed Source Network Location</h3>
+            <span class="sub">sample alerts · click a dot for details</span>
+            <span class="spacer"></span>
+            <span class="demo-badge" title="An IP is a network endpoint (VPN exit, cloud host, Tor relay, NAT), not a person or a physical place. We also have no GeoIP/ASN enrichment yet, and CICIDS strips client IPs — so positions here are a deterministic function of each source IP, for layout only, not real geolocation.">SIMULATED DATA</span>
+          </div>
+          <div class="map-wrap">
+            <div class="map-canvas">
+              <svg viewBox="0 0 1000 500" class="worldmap" preserveAspectRatio="none">
+                <rect x="0" y="0" width="1000" height="500" class="ocean"/>
+                <g id="worldGraticule"></g>
+                <g id="worldLand"></g>
+                <g id="mapRipples"></g>
+                <g id="mapMarkers"></g>
+              </svg>
+              <div class="map-popup" id="mapPopup" hidden></div>
+            </div>
+            <div class="map-side">
+              <div class="section-lab">Top source IPs</div>
+              <div class="map-list" id="mapList"></div>
+              <p class="map-note"><b>These dots are fixed sample alerts</b> for demonstration — the CICIDS data carries no client IPs (they're stripped for privacy), so there are no live positions to plot. The IPs are documentation-only ranges and the locations/ASNs are illustrative. Colour follows severity; the map is badged <b>SIMULATED DATA</b> accordingly. Any real ingested log that <em>does</em> carry a <span class="mono">source_ip</span> would plot here too. Real GeoIP/ASN enrichment and a vector basemap are a planned upgrade.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- MITRE (demo) -->
+        <section class="card">
+          <div class="card-head"><h3>MITRE ATT&CK Coverage</h3><span class="sub">techniques observed in current session</span><span class="spacer"></span><span class="demo-badge">DEMO · MOCK MAPPING</span></div>
+          <div class="mitre" id="mitre"></div>
+        </section>
+
+        <!-- Roadmap / Threat intel (demo) -->
+        <section class="roadmap">
+          <div class="card" id="sec-ti">
+            <div class="card-head"><h3>Threat Intelligence</h3><span class="sub">IOC feed</span><span class="spacer"></span><span class="demo-badge">DEMO · MOCK FEED</span></div>
+            <div class="ti-list" id="tiList"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Planned Integrations</h3><span class="sub">roadmap</span></div>
+            <div class="ti-list">
+              <div class="ti-item"><span>🌍 Geo-IP attack map</span><span class="ti-rep rep-warn">roadmap</span></div>
+              <div class="ti-item"><span>🔗 Live threat-intel feeds (AbuseIPDB / OTX)</span><span class="ti-rep rep-warn">roadmap</span></div>
+              <div class="ti-item"><span>🧬 MITRE ATT&CK auto-mapping</span><span class="ti-rep rep-warn">roadmap</span></div>
+              <div class="ti-item"><span>🖥️ Real host/system telemetry (CPU/RAM/disk)</span><span class="ti-rep rep-warn">roadmap</span></div>
+              <div class="ti-item"><span>⚙️ SOAR playbooks &amp; case management</span><span class="ti-rep rep-warn">roadmap</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== Log Explorer (filter + drill-down) ===================== -->
+  <div class="modal-mask" id="explorerMask"></div>
+  <aside class="modal" id="explorer" role="dialog" aria-label="Log Explorer">
+    <div class="modal-head">
+      <h3 id="explorerTitle">Log Explorer</h3>
+      <span class="sub" id="explorerCount"></span>
+      <button class="icon-btn" id="explorerClose" style="margin-left:auto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    </div>
+    <form class="filters" id="filters" autocomplete="off">
+      <label>Severity
+        <select id="fSeverity">
+          <option value="">Any</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+      <label>Source IP<input id="fIp" placeholder="e.g. 203.0.113.9" /></label>
+      <label>From<input type="datetime-local" id="fStart" /></label>
+      <label>To<input type="datetime-local" id="fEnd" /></label>
+      <label>Limit<input type="number" id="fLimit" value="200" min="1" max="1000" /></label>
+      <label class="chk"><input type="checkbox" id="fAlerts" /> Alerts only</label>
+      <div class="filter-actions">
+        <button type="submit" class="btn" id="fApply">Apply filters</button>
+        <button type="button" class="btn ghost" id="fReset">Reset</button>
+      </div>
+    </form>
+    <div class="modal-body">
+      <table class="stream explorer-table">
+        <thead><tr><th>Time</th><th>Event</th><th>Src → Dst</th><th>Proto</th><th>Score</th><th>Severity</th></tr></thead>
+        <tbody id="explorerBody"></tbody>
+      </table>
+    </div>
+  </aside>
+
+  <!-- mobile sidebar scrim + toast -->
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+  <div class="toast" id="toast"></div>
+
+  <!-- ===================== AI explanation drawer ===================== -->
+  <div class="drawer-mask" id="drawerMask"></div>
+  <aside class="drawer" id="drawer">
+    <div class="drawer-head">
+      <span class="ai-chip">AI</span>
+      <h3 id="drawerTitle">Detection Analysis</h3>
+      <button class="icon-btn" id="drawerClose" style="margin-left:auto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <script src="worldmap.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
