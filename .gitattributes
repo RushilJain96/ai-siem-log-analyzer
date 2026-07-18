@@ -1,0 +1,17 @@
+# Model artifacts are BINARY. Never apply text/EOL normalization to them:
+# on Windows, autocrlf could rewrite bytes on commit/checkout, so the file
+# Render checks out would no longer match the SHA-256 recorded in
+# model/model_card.json — the integrity check would then fail closed on
+# the server while passing locally. `binary` guarantees byte-identical
+# artifacts across every platform, which is what makes the hashing scheme
+# trustworthy.
+*.pkl binary
+*.joblib binary
+
+# The training-input CSV is fingerprinted in the card too — preserve its
+# exact bytes if it is ever committed (it's gitignored by default).
+data/raw/cicids_sample.csv binary
+
+# Generated release metadata stays reviewable text with stable LF endings,
+# so it doesn't churn between Windows and Linux checkouts.
+model/model_card.json text eol=lf

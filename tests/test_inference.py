@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from model.artifact_integrity import ModelArtifactIntegrityError, write_model_card
 from model.detector import Detector
 from model.features import FEATURE_COLUMNS, FeaturePipeline
 from model.inference import AnomalyScorer
@@ -131,47 +132,82 @@ def test_score_ignores_unknown_extra_keys():
     assert isinstance(result["anomaly_score"], float)
 
 
-# --- load_default() -------------------------------------------------------
+# --- load_default() integrity contract (Day 10) ---------------------------
+# load_default() no longer just loads files: it enforces the model-card
+# integrity policy (verify each artifact's SHA-256 against model_card.json
+# BEFORE deserializing). These lock the decision table. The in-memory
+# scorer tests above bypass all of this by construction.
 
 
-def test_load_default_raises_when_pipeline_missing(tmp_path):
-    detector_path = tmp_path / "detector.pkl"
-    df = _make_benign_df()
-    pipeline = FeaturePipeline().fit(df)
-    detector = Detector().fit(pipeline.transform(df))
-    detector.save(detector_path)
+def _write_verified_triplet(tmp_path):
+    """Write a matching preprocessor + detector + card into tmp_path.
 
-    with pytest.raises(FileNotFoundError):
-        AnomalyScorer.load_default(
-            pipeline_path=tmp_path / "nonexistent_pipeline.pkl",
-            detector_path=detector_path,
-        )
-
-
-def test_load_default_raises_when_detector_missing(tmp_path):
-    pipeline_path = tmp_path / "pipeline.pkl"
-    df = _make_benign_df()
-    FeaturePipeline().fit(df).save(pipeline_path)
-
-    with pytest.raises(FileNotFoundError):
-        AnomalyScorer.load_default(
-            pipeline_path=pipeline_path,
-            detector_path=tmp_path / "nonexistent_detector.pkl",
-        )
-
-
-def test_load_default_succeeds_and_scores(tmp_path):
-    pipeline_path = tmp_path / "pipeline.pkl"
-    detector_path = tmp_path / "detector.pkl"
-
+    Returns (pipeline_path, detector_path, card_path)."""
+    pipeline_path = tmp_path / "preprocessor.pkl"
+    detector_path = tmp_path / "isolation_forest.pkl"
+    card_path = tmp_path / "model_card.json"
     df = _make_benign_df()
     pipeline = FeaturePipeline().fit(df)
     pipeline.save(pipeline_path)
-    detector = Detector().fit(pipeline.transform(df))
-    detector.save(detector_path)
+    Detector().fit(pipeline.transform(df)).save(detector_path)
+    write_model_card(
+        card_path,
+        artifacts={
+            "preprocessor.pkl": pipeline_path,
+            "isolation_forest.pkl": detector_path,
+        },
+        artifact_version="v0.0.0-test",
+        training={"dataset": "synthetic"},
+        evaluation={"metrics": {}},
+    )
+    return pipeline_path, detector_path, card_path
 
+
+def test_load_default_succeeds_and_scores_when_verified(tmp_path):
+    pipeline_path, detector_path, card_path = _write_verified_triplet(tmp_path)
     scorer = AnomalyScorer.load_default(
-        pipeline_path=pipeline_path, detector_path=detector_path
+        pipeline_path=pipeline_path,
+        detector_path=detector_path,
+        card_path=card_path,
     )
     result = scorer.score(_normal_features())
     assert set(result.keys()) == {"is_alert", "anomaly_score", "top_features"}
+    assert scorer.release_metadata["artifact_version"] == "v0.0.0-test"
+
+
+def test_load_default_all_absent_raises_file_not_found(tmp_path):
+    """Nothing present -> the graceful path (caller MAY run model-less).
+    Distinct from an integrity failure, which is fatal."""
+    with pytest.raises(FileNotFoundError):
+        AnomalyScorer.load_default(
+            pipeline_path=tmp_path / "none.pkl",
+            detector_path=tmp_path / "none2.pkl",
+            card_path=tmp_path / "none.json",
+        )
+
+
+def test_load_default_partial_artifacts_fail_closed(tmp_path):
+    """A detector + card but no preprocessor is unverifiable -> integrity
+    error, never a silent partial load."""
+    _, detector_path, card_path = _write_verified_triplet(tmp_path)
+    with pytest.raises(ModelArtifactIntegrityError):
+        AnomalyScorer.load_default(
+            pipeline_path=tmp_path / "missing_preprocessor.pkl",
+            detector_path=detector_path,
+            card_path=card_path,
+        )
+
+
+def test_load_default_tampered_artifact_fails_closed(tmp_path):
+    """A one-byte change to a verified artifact -> integrity error BEFORE
+    it is ever unpickled."""
+    pipeline_path, detector_path, card_path = _write_verified_triplet(tmp_path)
+    corrupted = bytearray(detector_path.read_bytes())
+    corrupted[50] ^= 0x01
+    detector_path.write_bytes(corrupted)
+    with pytest.raises(ModelArtifactIntegrityError):
+        AnomalyScorer.load_default(
+            pipeline_path=pipeline_path,
+            detector_path=detector_path,
+            card_path=card_path,
+        )

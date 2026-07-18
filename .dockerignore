@@ -22,12 +22,17 @@ __pycache__/
 .coverage
 htmlcov/
 
-# --- Data and model artifacts (gigabytes / regenerated locally) ---
-# Models are provided at runtime via a volume mount (see docker-compose),
-# not baked in; CICIDS data never belongs in an image.
+# --- Data and model artifacts ---
+# CICIDS data never belongs in an image. All .pkl/.joblib are excluded by
+# default, EXCEPT the two approved model artifacts, which ARE baked into
+# the image so the deployed service can score (their hashes are verified
+# at startup against model/model_card.json). Locally, docker-compose still
+# overlays ./model as a read-only mount.
 data/
 *.pkl
 *.joblib
+!model/preprocessor.pkl
+!model/isolation_forest.pkl
 
 # --- Local databases ---
 *.db

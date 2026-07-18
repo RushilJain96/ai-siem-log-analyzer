@@ -16,13 +16,16 @@ drowning analysts in false positives).
 Run once from anywhere:
     python -m scripts.train_detector
 
-Output artifacts:
-    model/isolation_forest.pkl  (gitignored; each developer/CI-run
-                                  regenerates locally from the same CSV)
-    model/metrics.json          (committed — the evaluation record this
-                                  README's numbers are drawn from)
+Output artifacts (both committed as the approved model release):
+    model/isolation_forest.pkl  the fitted detector
+    model/model_card.json       the release record — provenance, evaluation,
+                                  runtime versions, and each artifact's
+                                  SHA-256 (verified at load time). Replaces
+                                  the old metrics.json.
+
+Pass --artifact-version to stamp the release (default below).
 """
-import json
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +33,7 @@ import pandas as pd
 from sklearn.metrics import roc_curve
 from sklearn.model_selection import train_test_split
 
+from model.artifact_integrity import sha256_file, write_model_card
 from model.detector import Detector
 from model.features import FeaturePipeline
 
@@ -37,12 +41,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_PATH = PROJECT_ROOT / "data" / "raw" / "cicids_sample.csv"
 PIPELINE_PATH = PROJECT_ROOT / "model" / "preprocessor.pkl"
 DETECTOR_PATH = PROJECT_ROOT / "model" / "isolation_forest.pkl"
-METRICS_PATH = PROJECT_ROOT / "model" / "metrics.json"
+CARD_PATH = PROJECT_ROOT / "model" / "model_card.json"
 
 FPR_BUDGET = 0.05
+# Human-set semantic version for the trained model. Bump when you retrain
+# and intend to ship a new approved model. Recorded in the card.
+ARTIFACT_VERSION = "v1.0.0"
 
 
-def main() -> None:
+def main(artifact_version: str = ARTIFACT_VERSION) -> None:
     if not SAMPLE_PATH.exists():
         raise SystemExit(
             f"Sample not found at {SAMPLE_PATH}\n"
@@ -134,20 +141,65 @@ def main() -> None:
     size_kb = DETECTOR_PATH.stat().st_size / 1024
     print(f"  Wrote {size_kb:.1f} KB.")
 
-    metrics_payload = {
-        "decision_threshold": tuned_threshold,
-        "fpr_budget": FPR_BUDGET,
-        "eval_set": {
-            "benign_test": len(X_benign_test),
-            "attack_test": len(X_attack_test),
+    # Write the model card LAST — after both artifacts are on disk — so it
+    # hashes the exact (preprocessor, detector) pair this run produced and
+    # binds them together. It is the single machine-readable release record
+    # (it replaces the old metrics.json): provenance + evaluation + the
+    # SHA-256s the app verifies before loading. See model/artifact_integrity.
+    print(f"\nWriting model card to {CARD_PATH}...")
+    card = write_model_card(
+        CARD_PATH,
+        artifacts={
+            "preprocessor.pkl": PIPELINE_PATH,
+            "isolation_forest.pkl": DETECTOR_PATH,
         },
-        "metrics": metrics,
-        "sanity_check_self_flag_rate": self_flag_rate,
-    }
-    print(f"\nSaving metrics to {METRICS_PATH}...")
-    with open(METRICS_PATH, "w") as f:
-        json.dump(metrics_payload, f, indent=2)
+        artifact_version=artifact_version,
+        training={
+            "dataset": "CICIDS2017 sampled dataset",
+            "random_state": detector.random_state,
+            "feature_count": len(pipeline.feature_columns),
+            "feature_names": list(pipeline.feature_columns),
+            "n_estimators": detector.model.n_estimators,
+            "contamination": detector.contamination,
+        },
+        evaluation={
+            "decision_threshold": tuned_threshold,
+            "fpr_budget": FPR_BUDGET,
+            "eval_set": {
+                "benign_test": len(X_benign_test),
+                "attack_test": len(X_attack_test),
+            },
+            "metrics": metrics,
+            "sanity_check_self_flag_rate": self_flag_rate,
+        },
+        training_data={
+            "path": str(SAMPLE_PATH.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+            "sha256": sha256_file(SAMPLE_PATH),
+        },
+        limitations=[
+            "Trained and evaluated on a sampled subset of CICIDS2017, not the "
+            "full capture.",
+            "Isolation Forest anomaly scores are not probabilities of "
+            "maliciousness (the score scale is calibrated, but it is not a "
+            "probability).",
+            "Dashboard source-IP locations are simulated until GeoIP "
+            "enrichment is implemented.",
+        ],
+    )
+    print(
+        f"  {artifact_version} · detector sha256 "
+        f"{card['artifacts']['isolation_forest.pkl']['sha256'][:12]}…"
+    )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Train and release the SIEM Isolation Forest detector."
+    )
+    parser.add_argument(
+        "--artifact-version",
+        default=ARTIFACT_VERSION,
+        help=f"Version stamped into model_card.json (default: {ARTIFACT_VERSION})",
+    )
+    args = parser.parse_args()
+    main(artifact_version=args.artifact_version)

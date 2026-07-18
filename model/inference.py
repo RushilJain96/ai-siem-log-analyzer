@@ -35,20 +35,33 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from model.artifact_integrity import (
+    ModelArtifactIntegrityError,
+    verify_model_artifacts,
+)
 from model.detector import Detector
 from model.features import FeaturePipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PIPELINE_PATH = PROJECT_ROOT / "model" / "preprocessor.pkl"
 DEFAULT_DETECTOR_PATH = PROJECT_ROOT / "model" / "isolation_forest.pkl"
+DEFAULT_CARD_PATH = PROJECT_ROOT / "model" / "model_card.json"
 
 
 class AnomalyScorer:
     """A fitted FeaturePipeline + Detector, composed into one scoring call."""
 
-    def __init__(self, pipeline: FeaturePipeline, detector: Detector) -> None:
+    def __init__(
+        self,
+        pipeline: FeaturePipeline,
+        detector: Detector,
+        release_metadata: dict | None = None,
+    ) -> None:
         self.pipeline = pipeline
         self.detector = detector
+        # The verified model card when loaded via load_default(); None for
+        # in-memory scorers (tests) that never went through disk verification.
+        self.release_metadata = release_metadata
 
     TOP_FEATURE_COUNT = 5
 
@@ -104,14 +117,51 @@ class AnomalyScorer:
         cls,
         pipeline_path: Path | str = DEFAULT_PIPELINE_PATH,
         detector_path: Path | str = DEFAULT_DETECTOR_PATH,
+        card_path: Path | str = DEFAULT_CARD_PATH,
     ) -> AnomalyScorer:
-        """Load both fitted artifacts from their standard locations.
+        """Load the two fitted artifacts, verifying their integrity first.
 
-        Raises:
-            FileNotFoundError: if either artifact is missing (propagated
-                unchanged from FeaturePipeline.load()/Detector.load()).
-                Callers decide what "missing" means for them.
+        The two states a caller must tell apart (api/main.py's lifespan
+        does exactly this):
+
+        - FileNotFoundError -> "no model here at all" (all three files
+          absent). A clean clone / CI. The caller MAY choose to run in a
+          graceful, detection-disabled mode.
+        - ModelArtifactIntegrityError -> "a model is here but it's wrong"
+          (a .pkl present without the card, the card without a .pkl, a
+          malformed/unsupported card, or a SHA-256 mismatch). This is
+          fail-closed: never load an unverified model.
+
+        The full decision table:
+
+            preprocessor + detector + card, hashes match -> load
+            all three absent                             -> FileNotFoundError
+            any partial / unverifiable combination       -> integrity error
+            malformed card or hash mismatch              -> integrity error
+
+        Verification hashes the raw bytes and compares them to the card
+        BEFORE either artifact is unpickled — see model/artifact_integrity.
         """
+        artifacts = {
+            "preprocessor.pkl": Path(pipeline_path),
+            "isolation_forest.pkl": Path(detector_path),
+        }
+        present = {name: p for name, p in artifacts.items() if p.exists()}
+        card_exists = Path(card_path).exists()
+
+        if not present and not card_exists:
+            raise FileNotFoundError(
+                "No model artifacts or model card present."
+            )
+        if len(present) != len(artifacts) or not card_exists:
+            missing = [n for n in artifacts if n not in present]
+            raise ModelArtifactIntegrityError(
+                "Model artifacts are present but unverifiable — refusing to "
+                f"load. Missing: {missing or ['(none)']}; "
+                f"model_card.json: {'present' if card_exists else 'MISSING'}."
+            )
+
+        card = verify_model_artifacts(card_path, artifacts)  # raises on mismatch
         pipeline = FeaturePipeline.load(pipeline_path)
         detector = Detector.load(detector_path)
-        return cls(pipeline, detector)
+        return cls(pipeline, detector, release_metadata=card)

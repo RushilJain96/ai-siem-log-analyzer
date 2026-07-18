@@ -4,10 +4,16 @@
 data/raw/*
 !data/raw/.gitkeep
 
-# Trained sklearn/joblib model files
-
+# Trained sklearn/joblib model files — ignored by default...
 *.pkl
 *.joblib
+
+# ...EXCEPT the two approved, deployed artifacts. These (plus their
+# model/model_card.json release record) are committed so the deployed
+# service ships with an integrity-verified model. Any other .pkl anywhere
+# stays out. See model/artifact_integrity.py.
+!model/preprocessor.pkl
+!model/isolation_forest.pkl
 
 # === Python runtime ===
 
