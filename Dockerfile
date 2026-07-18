@@ -14,7 +14,9 @@
 #   attacker lands as an unprivileged user, not root inside the
 #   container. Cheap, standard hardening.
 # - CMD binds 0.0.0.0 (not 127.0.0.1) so the port is reachable from
-#   outside the container.
+#   outside the container, and honors $PORT: managed platforms (Render,
+#   etc.) inject the port they route to via $PORT and expect the app to
+#   listen on it. We default to 8000 for local/compose use.
 
 FROM python:3.12-slim
 
@@ -47,7 +49,13 @@ EXPOSE 8000
 # healthcheck also confirms the database is reachable. Uses stdlib
 # urllib so we don't have to add curl to the image.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request, sys; \
-sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status == 200 else sys.exit(1)"
+    CMD python -c "import os, urllib.request, sys; \
+port = os.getenv('PORT', '8000'); \
+sys.exit(0 if urllib.request.urlopen(f'http://localhost:{port}/health').status == 200 else 1)"
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# `sh -c` so ${PORT} is expanded at runtime (JSON/exec form does no env
+# substitution); `exec` so uvicorn REPLACES the shell as PID 1 and receives
+# SIGTERM directly — otherwise the shell swallows it and shutdown isn't
+# graceful (matters for zero-downtime redeploys/restarts). Falls back to
+# 8000 when PORT isn't set (local/compose).
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -45,16 +45,16 @@ services:
       APP_ENV: docker
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       APP_NAME: ${APP_NAME:-siem-log-analyzer}
+      # Local default: don't hard-fail if no model is committed/baked. The
+      # deployed service (render.yaml) sets this true. See api/main.py.
+      MODEL_REQUIRED: "false"
     ports:
       - "8000:8000"
-    volumes:
-      # Read-only mount of the local model directory. If preprocessor.pkl
-      # and isolation_forest.pkl exist locally (i.e. you've trained), the
-      # container picks them up and scores live; if not, it starts anyway
-      # and skips detection (the Day 5 graceful-degradation path). Nothing
-      # is baked into the image. The container's own /health HEALTHCHECK
-      # is declared in the Dockerfile, so it isn't repeated here.
-      - ./model:/app/model:ro
+    # No model volume mount: as of Day 10 the approved, integrity-verified
+    # artifacts are baked into the image (see .dockerignore allowlist), the
+    # same as production. A host mount would shadow them (and the model/*.py
+    # sources) and could break the startup hash check. Rebuild the image to
+    # ship a retrained model.
 
 volumes:
   postgres_data:

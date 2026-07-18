@@ -19,6 +19,7 @@ from api.routes import dashboard, logs, stats
 from core.config import settings
 from core.logging import configure_logging
 from db.database import SessionLocal, init_db
+from model.artifact_integrity import ModelArtifactIntegrityError
 from model.inference import AnomalyScorer
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
@@ -62,18 +63,60 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # api/realtime.py for why this bridge is needed.
     manager.bind_loop(asyncio.get_running_loop())
 
+    # Load + integrity-verify the model. Three outcomes:
+    #  - success              -> scoring live (log the approved version/hash)
+    #  - FileNotFoundError    -> no model at all: degrade gracefully UNLESS
+    #                            MODEL_REQUIRED (then it's a fatal misconfig,
+    #                            e.g. a Docker build that dropped the model).
+    #  - ModelArtifactIntegrityError -> a model is present but tampered/
+    #                            mismatched: ALWAYS fail closed. We never
+    #                            catch it, so it aborts startup.
     try:
-        app.state.scorer = AnomalyScorer.load_default()
-        logger.info("Anomaly detector loaded; /logs/ingest will score entries")
-    except FileNotFoundError:
+        scorer = AnomalyScorer.load_default()
+        app.state.scorer = scorer
+        release = scorer.release_metadata or {}
+        artifacts = release.get("artifacts", {})
+        logger.info(
+            "Anomaly detector loaded and integrity-verified; scoring is live",
+            extra={
+                "artifact_version": release.get("artifact_version", "unknown"),
+                "detector_sha256": artifacts.get("isolation_forest.pkl", {})
+                .get("sha256", "")[:12],
+                "preprocessor_sha256": artifacts.get("preprocessor.pkl", {})
+                .get("sha256", "")[:12],
+            },
+        )
+    except FileNotFoundError as exc:
+        # No model at all. Fine locally (graceful), fatal on a service that
+        # declared MODEL_REQUIRED (e.g. a build that dropped the artifacts).
+        if settings.model_required:
+            logger.critical(
+                "MODEL_REQUIRED=true but no model artifacts were found; "
+                "startup aborted. Check that model/preprocessor.pkl, "
+                "model/isolation_forest.pkl and model/model_card.json were "
+                "included in the build.",
+                exc_info=True,
+            )
+            raise RuntimeError(
+                "MODEL_REQUIRED=true, but no complete model release is installed."
+            ) from exc
         app.state.scorer = None
         logger.warning(
-            "No trained model found (model/preprocessor.pkl / "
-            "model/isolation_forest.pkl missing) -- /logs/ingest will "
-            "accept logs but skip anomaly detection. Run "
-            "scripts/fit_pipeline.py and scripts/train_detector.py to "
-            "enable it."
+            "No trained model found -- running in graceful 'detection "
+            "unavailable' mode. /logs/ingest still accepts and stores logs. "
+            "Run scripts/fit_pipeline.py + scripts/train_detector.py to enable "
+            "scoring."
         )
+    except ModelArtifactIntegrityError:
+        # A model IS present but tampered / mismatched / unverifiable. Always
+        # fatal — never silently run an unapproved model. Not caught anywhere
+        # else, so this aborts startup.
+        logger.critical(
+            "Model artifact integrity verification FAILED; startup aborted. "
+            "The model does not match its approved model_card.json.",
+            exc_info=True,
+        )
+        raise
 
     yield
     logger.info("Application shutting down")
@@ -83,7 +126,7 @@ app = FastAPI(
     title="AI-Driven SIEM Log Analyzer",
     description="Ingests network logs, detects anomalies via Isolation Forest, "
     "and surfaces high-risk alerts through a REST API and dashboard.",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 

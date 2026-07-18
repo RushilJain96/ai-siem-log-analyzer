@@ -12,6 +12,38 @@ import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _read_bool(name: str, default: bool) -> bool:
+    """Read a STRICT boolean env var: an unrecognised value raises instead
+    of silently defaulting. For a security-relevant flag like
+    MODEL_REQUIRED, a typo (MODEL_REQUIRED=treu) must not quietly become
+    False — that would defeat the whole fail-closed guarantee."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    raise ValueError(
+        f"{name} must be one of {sorted(_TRUE_VALUES | _FALSE_VALUES)}, "
+        f"got {raw!r}."
+    )
+
+
+def _normalize_db_url(url: str) -> str:
+    """Render (and other Heroku-style providers) hand out DATABASE_URLs
+    that start with `postgres://`. SQLAlchemy 2.0 dropped that alias and
+    only recognises `postgresql://`, so we rewrite it here — the one place
+    that reads the env — rather than sprinkling the fix elsewhere."""
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://") :]
+    return url
+
 # load_dotenv() reads .env into os.environ.
 #
 # - Called once, at module import time.
@@ -36,6 +68,7 @@ class Settings:
     log_level: str
     app_name: str
     app_env: str
+    model_required: bool
 
 
 def _load_settings() -> Settings:
@@ -51,10 +84,15 @@ def _load_settings() -> Settings:
     can run it immediately without configuring anything.
     """
     return Settings(
-        database_url=os.getenv("DATABASE_URL", "sqlite:///./siem.db"),
+        database_url=_normalize_db_url(os.getenv("DATABASE_URL", "sqlite:///./siem.db")),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         app_name=os.getenv("APP_NAME", "siem-log-analyzer"),
         app_env=os.getenv("APP_ENV", "development"),
+        # False locally so a fresh clone / CI runs without a model
+        # (graceful degradation). Set true on the deployed service so a
+        # missing model is a hard startup failure, not a silent "AI SIEM
+        # with no AI". See api/main.py's lifespan.
+        model_required=_read_bool("MODEL_REQUIRED", default=False),
     )
 
 
