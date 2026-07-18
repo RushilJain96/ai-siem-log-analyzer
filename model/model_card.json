@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "artifact_version": "v1.0.0",
+  "generated_at": "2026-07-18T10:47:10.205312+00:00",
+  "artifacts": {
+    "preprocessor.pkl": {
+      "sha256": "fd1c558d3f73833e71806be6abecb5384ed0e23e1d0e609132ffeaceaecbe427",
+      "bytes": 3654
+    },
+    "isolation_forest.pkl": {
+      "sha256": "aed2ca71b69d7b97f3bb17ecc5322e92647a44fcafced628150db00018a4029a",
+      "bytes": 826320
+    }
+  },
+  "training": {
+    "dataset": "CICIDS2017 sampled dataset",
+    "random_state": 42,
+    "feature_count": 18,
+    "feature_names": [
+      "Flow Duration",
+      "Flow Bytes/s",
+      "Flow Packets/s",
+      "Fwd Packet Length Mean",
+      "Fwd Packet Length Std",
+      "Bwd Packet Length Mean",
+      "Bwd Packet Length Std",
+      "Total Fwd Packets",
+      "Total Backward Packets",
+      "Flow IAT Mean",
+      "Flow IAT Std",
+      "SYN Flag Count",
+      "ACK Flag Count",
+      "RST Flag Count",
+      "PSH Flag Count",
+      "Init_Win_bytes_forward",
+      "Init_Win_bytes_backward",
+      "Down/Up Ratio"
+    ],
+    "n_estimators": 100,
+    "contamination": 0.01
+  },
+  "evaluation": {
+    "decision_threshold": 0.021128999321831713,
+    "fpr_budget": 0.05,
+    "eval_set": {
+      "benign_test": 9093,
+      "attack_test": 12827
+    },
+    "metrics": {
+      "precision": 0.9081322247008721,
+      "recall": 0.3491073516800499,
+      "f1": 0.504336073882194,
+      "fpr": 0.04981854173540086,
+      "adjusted_precision": 0.6307667591899822,
+      "tp": 4478,
+      "tn": 8640,
+      "fp": 453,
+      "fn": 8349
+    },
+    "sanity_check_self_flag_rate": 0.010008523742747945
+  },
+  "runtime": {
+    "python": "3.12.10",
+    "scikit_learn": "1.4.2",
+    "joblib": "1.4.2"
+  },
+  "limitations": [
+    "Trained and evaluated on a sampled subset of CICIDS2017, not the full capture.",
+    "Isolation Forest anomaly scores are not probabilities of maliciousness (the score scale is calibrated, but it is not a probability).",
+    "Dashboard source-IP locations are simulated until GeoIP enrichment is implemented."
+  ],
+  "training_data": {
+    "path": "data/raw/cicids_sample.csv",
+    "sha256": "23769de715fd7ff77cfae7002153fb31483b0eb61672ef0344740450cdb65cb6"
+  }
+}
