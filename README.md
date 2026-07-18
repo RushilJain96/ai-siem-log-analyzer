@@ -1,253 +1,198 @@
-# AI-Driven SIEM Log Analyzer
+<p align="center">
+  <img src="docs/images/logo.png" alt="Orion — AI-Powered SIEM" width="230" />
+</p>
 
-> A cybersecurity tool that ingests network logs, detects anomalies via Isolation Forest, and surfaces high-risk alerts through a REST API. Built to understand how production SIEM tools (Splunk, Wazuh, Cortex XDR) work under the hood.
+<h1 align="center">Orion — AI-Driven SIEM Log Analyzer</h1>
 
-[![CI](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml)
+<p align="center">
+  Ingests network-flow logs, scores entries with flow features for anomalies using an Isolation Forest,<br/>
+  and surfaces high-risk alerts through a REST API and a <b>real-time SOC dashboard</b>.
+</p>
 
-## Status — Day 9 of 10
+<p align="center">
+  <a href="https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml"><img src="https://github.com/RushilJain96/ai-siem-log-analyzer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python" />
+  <img src="https://img.shields.io/badge/tests-142%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
+</p>
 
-This project is being built incrementally. The current state covers the **foundation** (HTTP API, database, structured logging, CI), the **ML pipeline core** (feature engineering, anomaly detection, evaluation), **live detection wired into the API**, **alert triage** (severity tiers and filtering), a **containerized Postgres deployment** (Docker Compose), and a **real-time SOC dashboard** (WebSocket-driven). Cloud deployment is the last remaining piece.
+Orion is a from-scratch **Security Information & Event Management (SIEM)** tool, built over ten days to understand how production platforms (Splunk, Wazuh, Cortex XDR) work under the hood. It's not just a model in a notebook — it treats the production concerns as first-class: a trust boundary on ingestion, a containerized Postgres deployment, a live WebSocket dashboard, an **integrity-verified model release** (SHA-256 verified before load), and a Blueprint-defined cloud deployment.
 
-**Working today:**
-- FastAPI service with auto-generated OpenAPI docs at `/docs`
-- SQLAlchemy 2.0 persistence — SQLite for local dev, **PostgreSQL via Docker Compose** (Day 8), swapped by a single `DATABASE_URL` change with zero DB-layer code changes
-- Endpoints: `POST /logs/ingest`, `GET /logs` (with filters), `GET /logs/alerts`, `GET /stats`, `GET /model/info`, `GET /health`, `WS /ws`, and the live dashboard at `/dashboard`
-- Structured JSON logging configured via environment variables
-- pytest test suite covering ingest → list → stats, parser, feature pipeline, detector, live inference, end-to-end detection, severity, alert-filtering, WebSocket manager, and dashboard-endpoint tests (139 tests total)
-- GitHub Actions CI running tests on every push
-- Chunked sampler producing a class-aware sample from the eight CICIDS 2017 CSVs: benign rows at a flat 2%, attack rows at 2% or a 300-row-per-class floor (whichever is larger) — a Day 4 fix, since a flat 2% was silently reducing rare attack classes (Heartbleed, Infiltration) to statistical noise or zero rows
-- CICIDS row parser handling the dataset's known quirks (leading whitespace in column names, `inf`/`NaN` in flow-rate columns, missing IPs)
-- HTTP-driven ingestion pipeline that seeds the database from parsed CICIDS rows
-- Feature engineering pipeline: 18 hand-selected flow-shape features — timing/rate, directional packet-size statistics, TCP flag counts (SYN/ACK/RST/PSH), TCP window sizes, and down/up ratio
-- StandardScaler-based normalization fitted on benign rows only to prevent training-time data leakage
-- Fitted preprocessing pipeline persisted to disk via `joblib` for reuse at inference time
-- Per-feature discrimination analysis run at fit time — attack rows shift up to +3.46 std devs on backward packet-length features (Bwd Packet Length Std), confirming directional stats outperform aggregate stats
-- `Detector`: an Isolation Forest wrapper with calibrated `anomaly_score()` (sigmoid over `decision_function()`, scale calibrated from the training data's own spread — see [Model evaluation](#model-evaluation)), a persisted operational `decision_threshold` decoupled from training-time `contamination`, and a static `evaluate()` for precision/recall/F1/FPR plus prevalence-adjusted precision
-- `scripts/train_detector.py`: fits on an 80% benign split (all attack rows held out for evaluation only), tunes `decision_threshold` by maximizing recall subject to an FPR budget
-- Per-attack-type recall breakdown across all 14 CICIDS attack labels, explaining exactly which attacks the detector can and can't see and why (see [Model evaluation](#model-evaluation))
-- `POST /logs/ingest` now runs every entry through the trained detector: `AnomalyScorer` (`model/inference.py`) composes `FeaturePipeline` + `Detector` into one scoring call, loaded once at app startup and injected via FastAPI's dependency system — same pattern as the DB session, not reloaded per-request
-- Closed a real trust-boundary gap: `is_alert`/`anomaly_score` can no longer be set by the client. `LogIngest` now rejects them outright (`extra="forbid"` → a loud 422, not a silently dropped field) instead of trusting caller-supplied labels
-- `features: dict[str, float]` replaces the old ground-truth-label shortcut. A partial or empty features dict degrades gracefully via median imputation (reusing Day 3's logic, built for exactly this case); a missing trained model degrades gracefully too — the API still starts and ingests, just skips scoring and logs a warning
-- Severity tiers (`low`/`medium`/`high`/`critical`) derived from `anomaly_score` in `model/severity.py` — computed on read, never stored (one source of truth for the cutoffs), and `null` for non-alerts. The `high` cutoff (0.5) is anchored to the model's own calibrated decision boundary from Day 4
-- `GET /logs` gains composable filters — `is_alert`, `severity`, and a `start_time`/`end_time` window — plus a dedicated `GET /logs/alerts` view ordered most-anomalous-first for triage (a convenience shortcut for the common `?is_alert=true` case)
-- `/stats` gains a per-severity alert breakdown (`alerts_by_severity`) for at-a-glance triage load
-- `anomaly_score` column indexed (Day 7) — it became a query+sort key on Day 6 (alerts ordering, severity range filters, the stats breakdown), so it's indexed by actual query pattern
-- **Dockerized (Day 8):** a `Dockerfile` (non-root user, layer-cached deps, stdlib `/health` healthcheck) and `docker-compose.yml` bringing up the app + Postgres together — the app waits on a Postgres healthcheck before starting (`depends_on: service_healthy`). The trained model is provided via a read-only volume mount, so detection runs in-container if the `.pkl` exist locally and gracefully skips if not
-- **Runs on PostgreSQL** with no code changes beyond `DATABASE_URL` — `db/database.py` needed only `pool_pre_ping` for networked-connection resilience. Verified live: data persists across a full `docker compose down`/`up` in a named Postgres volume, and timezone-aware timestamps round-trip correctly (the SQLite naive-datetime limitation is resolved on Postgres)
-- **Real-time push (Day 9):** a `ConnectionManager` (`api/realtime.py`) fans every ingested log out to connected dashboards over a WebSocket (`WS /ws`). The interesting part: `POST /logs/ingest` is a *sync* route (Starlette runs it in a worker thread, correct for sync SQLAlchemy), while WebSockets live on the event loop — so the broadcast is bridged with `asyncio.run_coroutine_threadsafe` onto the loop captured at startup, fire-and-forget so ingest never blocks. No-ops cleanly when no dashboard is watching
-- **Interpretable per-row signal (not model attribution):** `AnomalyScorer.score()` returns `top_features` — each feature's *standardized deviation from the benign baseline*. Because the pipeline scales to mean-0/std-1 on *benign* traffic, a feature's scaled value *is* its distance from normal in standard deviations, so "Bwd Packet Length Std is +4.1σ above baseline" tells an analyst **where** the row looks unusual. It is deliberately **not** the Isolation Forest's internal reason for isolating the row — the forest decides via path length across random splits, which has no per-feature contribution — and it isn't SHAP-style attribution. True model attribution would need a separate explainer (a v2.0 item); this is an honest proxy, labeled as such in the UI
-- **Live SOC dashboard** at `/dashboard` — a dependency-free (no build step) dark-theme console: KPI cards (incl. *Detected Alerts* and *Avg Anomaly Score* — the raw mean IF score, not a calibrated probability), a live-computed AI Threat Index gauge, real-time log stream with quick severity filters, alerts feed, severity/category/timeline charts, a backend-backed **Log Explorer** (`GET /logs` with severity/IP/time/alert filters) reachable by clicking any severity to drill down, a real Model Status panel (`GET /model/info` reads live detector metadata), an **Observed Source Network Location** map, and a click-through AI Explanation drawer showing each row's largest baseline deviations. The map draws a *real* basemap — Natural Earth country boundaries projected to inline SVG at build time (`dashboard/worldmap.js`), so there's no map dependency or third-party tile call at runtime — and plots each source IP as a severity-coloured dot with a ring that pulses on new critical/high. Panels with no backing data (system health, MITRE ATT&CK, threat-intel feeds) are clearly badged **DEMO**; the map is badged **SIMULATED DATA** because an IP is a network endpoint, not a place, and we have no GeoIP/ASN enrichment yet (CICIDS also strips client IPs) — so a dot's *position* is a deterministic function of its source IP, not a real location. Real city/ASN/network-type enrichment plus a vector basemap (MapLibre) is a planned upgrade, deferred until the positions are real enough to justify it
+> 🔗 **Live demo:** _add your Render URL here after deploying_ · **API docs:** `/docs` · **Dashboard:** `/dashboard`
 
-**Coming next:**
-- Cloud deployment (Day 10)
+> ⚠️ **Portfolio-demo scope:** log ingestion and WebSocket authentication are not implemented yet. Do not submit real security telemetry or expose the API broadly until an ingestion API key is added.
 
-## Quick start
+---
 
-Requires Python 3.12+.
+## ✨ What it does
+
+| | |
+|---|---|
+| 🧠 **Anomaly detection** | Isolation Forest scores each network flow; a tuned threshold turns scores into alerts, with `low`/`medium`/`high`/`critical` severity tiers. |
+| ⚡ **Real-time dashboard** | Dependency-free SOC console (no build step) streaming live over WebSockets — KPIs, threat-index gauge, log stream, alerts, charts, a backend-backed log explorer, and a source-location map. |
+| 🔍 **Honest explainability** | Each alert shows its *largest deviations from the benign baseline* (σ-distance) — a real analyst signal, labeled clearly as **not** SHAP-style model attribution. |
+| 🔐 **Governed model release** | The deployed model is committed with a `model_card.json` (provenance + per-artifact SHA-256) and **verified before it's ever unpickled**; a mismatch fails startup closed. |
+| 🐳 **Production-shaped** | 12-factor config, SQLite→Postgres by a single env var, Docker Compose, and a Render Blueprint (infra-as-code). |
+| ✅ **Tested** | 142 pytest tests + GitHub Actions CI on every push. |
+
+## 📸 Screenshots
+
+![Orion SOC dashboard](docs/images/dashboard.png)
+
+| Source-location map | Log explorer |
+|---|---|
+| ![Source map](docs/images/source-map.png) | ![Log explorer](docs/images/log-explorer.png) |
+
+## 🏗️ How it works
+
+```mermaid
+flowchart LR
+    A[CICIDS flows / log source] -->|POST /logs/ingest| B[FastAPI]
+    B --> C{Trained model?}
+    C -->|yes| D[AnomalyScorer<br/>FeaturePipeline + Isolation Forest]
+    C -->|no| E[store unscored<br/>graceful degrade]
+    D --> F[(PostgreSQL / SQLite)]
+    E --> F
+    D -->|broadcast| G[[WebSocket /ws]]
+    G --> H[Live SOC dashboard]
+    F -->|GET /logs, /stats, /logs/alerts| H
+```
+
+Ingest is a **sync** route (correct for sync SQLAlchemy); the WebSocket lives on the event loop. The broadcast is bridged across that boundary with `asyncio.run_coroutine_threadsafe`, fire-and-forget, so ingestion never blocks on dashboard delivery.
+
+---
+
+## 🚀 Quick start (local)
+
+Requires **Python 3.12+**.
 
 ```bash
-# Clone and enter the project
 git clone https://github.com/RushilJain96/ai-siem-log-analyzer.git
 cd ai-siem-log-analyzer
 
-# Create and activate a virtual environment
 python -m venv .venv
 source .venv/bin/activate          # Linux/macOS
-.venv\Scripts\Activate.ps1         # Windows PowerShell
+# .venv\Scripts\Activate.ps1       # Windows PowerShell
 
-# Install dependencies
 pip install -r requirements-dev.txt
-
-# Configure environment
 cp .env.example .env
 
-# Run the API
 uvicorn api.main:app --reload
-
-# Open the auto-generated docs
-# http://localhost:8000/docs
 ```
 
-## Running the tests
+Then open:
+- **API docs** → http://localhost:8000/docs
+- **Dashboard** → http://localhost:8000/dashboard/
+
+Orion ships with an approved, integrity-verified model, so **detection works out of the box** — open the dashboard and start ingesting. (If the model is ever absent, the API still runs and degrades gracefully to *Model Status: unavailable*.)
+
+## 🧠 Retrain the model
+
+The current release includes an approved, integrity-verified model pair, so
+you do not need CICIDS data just to run Orion locally.
+
+The raw CICIDS dataset is required only when you want to reproduce training
+or create a new reviewed model release. Raw CSV files remain untracked.
 
 ```bash
-pytest tests/ -v
-```
+# 1. Download MachineLearningCSV.zip from
+#    https://www.unb.ca/cic/datasets/ids-2017.html
+#    → extract to ~/Downloads/MachineLearningCSV/MachineLearningCVE/  (or set CICIDS_DIR)
 
-Tests use an in-memory SQLite database — no setup required, no real database touched.
-
-## Running with Docker (Postgres)
-
-The API also runs containerized against PostgreSQL, via Docker Compose:
-
-```bash
-docker compose up --build -d      # builds the app image, starts app + Postgres
-docker compose ps                 # wait until both show (healthy)
-docker compose logs api           # startup: "Anomaly detector loaded" or graceful skip
-curl http://localhost:8000/health # {"status":"ok"} — also proves the DB is reachable
-```
-
-Notes:
-- The swap from SQLite is a single `DATABASE_URL` change (compose sets it to
-  `postgresql+psycopg2://...@db:5432/...`) — no application code differs.
-- The trained model is mounted read-only (`./model:/app/model:ro`). If you've
-  run `fit_pipeline` + `train_detector` locally, the container picks up the
-  `.pkl` and scores live; if not, it starts anyway and skips detection.
-- Data persists in a named volume across `docker compose down`/`up`. Use
-  `docker compose down -v` to wipe it.
-- Credentials in `docker-compose.yml` are local-development defaults only —
-  real secrets come from the deployment platform's environment.
-
-## Live dashboard
-
-With the API running (and a trained model loaded), open the real-time SOC
-console:
-
-```
-http://localhost:8000/dashboard/
-```
-
-Open it **before** ingesting so you watch logs animate in live, then in
-another terminal:
-
-```bash
-python -m scripts.ingest_sample --count 2000
-```
-
-Every ingested log is pushed over `WS /ws` as a `{"type": "log", ...}`
-frame (all logs, not just alerts), and the dashboard updates the log
-stream, KPIs, threat-index gauge, alerts, and charts in real time. Click
-any log or alert to open the AI Explanation drawer — the "largest
-deviations from benign baseline" there are each feature's real
-standardized σ-distance from the learned baseline (an analyst signal for
-*where* the row is unusual), not mock values and not the model's internal
-attribution. Click any severity to open the Log Explorer, which queries
-`GET /logs` with real filters. The Model Status panel reads live detector
-metadata from `GET /model/info`. Without a trained model the dashboard
-still loads and honestly shows Model Status as "unavailable."
-
-Panels backed by real data: KPIs, threat index, live stream, alerts,
-severity/category/timeline charts, AI explanation, model status. Panels
-badged **DEMO** (mock data, designed for future integration): system
-health, MITRE ATT&CK coverage, threat-intel feed.
-
-## Loading sample data
-
-The API is empty on a fresh clone. To seed it with real network flows from
-CICIDS 2017:
-
-```bash
-# 1. Download MachineLearningCSV.zip from https://www.unb.ca/cic/datasets/ids-2017.html
-#    and extract to ~/Downloads/MachineLearningCSV/MachineLearningCVE/ (or set CICIDS_DIR)
-
-# 2. Produce a class-aware sample (~58K rows, ~18 MB)
+# 2. Build a class-aware sample (~58K rows)
 python -m scripts.sample_cicids
 
-# 3. Start the API in one terminal
+# 3. Fit the preprocessor, then train + evaluate the detector
+python -m scripts.fit_pipeline       # → model/preprocessor.pkl
+python -m scripts.train_detector     # → model/isolation_forest.pkl + model/model_card.json
+
+# 4. Start the API, then seed it (in a second terminal)
 uvicorn api.main:app
-
-# 4. In another terminal, ingest N rows into the running API
 python -m scripts.ingest_sample --count 5000
-
-# 5. Verify
-curl http://localhost:8000/stats
-# {"total_logs": 5000, "total_alerts": <depends on the trained model>, "alert_rate": <depends>}
 ```
 
-`total_alerts` reflects the trained detector's actual predictions (Day 5), not CICIDS's ground-truth labels — the count varies by how the model was trained and won't match any fixed number here. This requires a trained model (see "Fitting the feature pipeline" and "Training the detector" below) to be present *before* `scripts.ingest_sample` runs — the API only loads the model once, at startup.
-
-### Fitting the feature pipeline
-
-After loading sample data, fit the preprocessing pipeline used by the
-anomaly detector:
-
-```bash
-python -m scripts.fit_pipeline
-```
-
-This produces `model/preprocessor.pkl`, a fitted StandardScaler plus
-per-column medians for imputation at inference time. The script also
-prints per-feature discrimination stats — attack rows should look
-visibly shifted from the benign reference distribution on
-discriminative features like `Packet Length Std` and `Flow IAT Max`.
-
-The `.pkl` artifact is gitignored — each developer regenerates it
-locally from their fitted pipeline.
-
-The sample CSV and the SQLite database file are gitignored — each developer produces their own from their local CICIDS download.
-
-### Training the detector
-
-After fitting the feature pipeline, train the Isolation Forest anomaly detector:
-
-```bash
-python -m scripts.train_detector
-```
-
-This splits benign rows 80/20 (train/test) — **all attack rows are held
-out for evaluation only**, never seen during training, per anomaly-detection
-convention. It tunes the operational alert threshold (`decision_threshold`)
-by maximizing recall subject to a 5% false-positive-rate budget, then
-persists the fitted detector to `model/isolation_forest.pkl` (gitignored)
-and the evaluation metrics to `model/metrics.json` (committed).
-
-### Trying live detection
-
-With both `.pkl` artifacts in place and the API running, POST a log with
-`features` and the response comes back scored:
+**Try live scoring** — POST a log with `features` and it comes back scored:
 
 ```bash
 curl -X POST http://localhost:8000/logs/ingest \
   -H "Content-Type: application/json" \
-  -d '{
-    "event_time": "2026-07-11T12:00:00Z",
-    "source_ip": "10.0.0.5",
-    "features": {"Flow Duration": 40000000, "Flow Bytes/s": 2, "SYN Flag Count": 0}
-  }'
-# {"id": 1, ..., "anomaly_score": 0.87, "is_alert": true}   <- illustrative; your actual
-#                                                              score depends on your locally
-#                                                              trained model, not a fixed value
+  -d '{"event_time":"2026-07-11T12:00:00Z","source_ip":"10.0.0.5",
+       "features":{"Flow Duration":40000000,"Flow Bytes/s":2,"SYN Flag Count":0}}'
+# → { ..., "anomaly_score": 0.87, "is_alert": true }   (illustrative; your score depends on your model)
 ```
 
-`features` accepts any subset of the 18 columns in
-`model.features.FEATURE_COLUMNS` — omitted ones are imputed from the
-fitted pipeline's medians, same as at training time. No `features` at
-all (or no trained model loaded) leaves `is_alert: false` and
-`anomaly_score: null`, same as every other field the client doesn't
-control.
+`features` accepts any subset of the 18 columns in `model.features.FEATURE_COLUMNS`; omitted ones are imputed from the fitted pipeline's medians. `is_alert`/`anomaly_score` are **server-set only** — a client that tries to send them gets a `422` (a deliberate trust boundary).
 
-### Triaging alerts
+> 💡 The dashboard is best watched **live**: open `/dashboard/` *before* running `ingest_sample`, and watch logs, alerts, and charts animate in.
 
-Once logs are scored, query them by urgency:
+## 📡 API reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/logs/ingest` | Ingest a log; scores it if a model + `features` are present |
+| `GET` | `/logs` | List logs with filters: `is_alert`, `severity`, `source_ip`, `start_time`, `end_time` |
+| `GET` | `/logs/alerts` | Alerts only, most-anomalous first (triage view) |
+| `GET` | `/stats` | Totals + `alerts_by_severity` breakdown |
+| `GET` | `/model/info` | Live detector metadata (or `unavailable`) |
+| `GET` | `/health` | Readiness probe (also proves the DB is reachable) |
+| `WS` | `/ws` | Real-time feed — every stored log as `{"type":"log", ...}` |
+| — | `/dashboard/` | The live SOC console · `/docs` for OpenAPI |
+
+## 🖥️ The dashboard
+
+**Real backend data:** KPIs, AI Threat Index gauge, live log stream + severity filters, alerts feed, severity/category/timeline charts, the **Log Explorer** (drill into any severity via `GET /logs`), **Model Status** (`GET /model/info`), and the AI Explanation drawer (real σ-deviations).
+
+**Honestly labeled as not-real:**
+- **`SIMULATED DATA` — the source-location map.** An IP is a network endpoint, not a place, and there's no GeoIP/ASN enrichment yet (CICIDS also strips client IPs). The basemap is real (Natural Earth boundaries baked to inline SVG — no third-party tiles), but a dot's *position* is a deterministic function of its IP. It's seeded with fixed sample alerts so it's never empty in a demo.
+- **`DEMO` panels** — system health, MITRE ATT&CK coverage, threat-intel feed. Built to show the intended layout for future integration; the data is mock.
+
+---
+
+## 🐳 Run with Docker (Postgres)
 
 ```bash
-# Alerts, most-anomalous first (critical at the top)
-curl "http://localhost:8000/logs/alerts?limit=5"
-
-# Just the critical tier
-curl "http://localhost:8000/logs?severity=critical"
-
-# Per-severity breakdown
-curl http://localhost:8000/stats
-# {"total_logs": 2000, "total_alerts": 235, "alert_rate": 0.1175,
-#  "alerts_by_severity": {"low": 95, "medium": 48, "high": 83, "critical": 9}}
+docker compose up --build -d          # app + Postgres
+docker compose logs api               # look for "integrity-verified" (or graceful skip)
+curl.exe http://localhost:8000/health # {"status":"ok"}
+docker compose down                   # add -v to also wipe the DB volume
 ```
 
-Severity is `low`/`medium`/`high`/`critical` for alerts, `null` for
-non-alerts. An unknown `severity=` value is rejected with a 422.
+Switching from SQLite to Postgres is a single `DATABASE_URL` change — no application code differs. Data persists in a named volume across restarts.
 
-## Model evaluation
+> On **Windows PowerShell**, use `curl.exe` (plain `curl` is an alias for `Invoke-WebRequest`). On macOS/Linux, use `curl`.
 
-- **Correction vs. the original project doc:** `contamination=0.01`, not `0.1` — it's sklearn's training-time noise allowance for the benign-only fit, not real-world attack prevalence (~19.6% in full CICIDS-2017). Its exact value turns out not to affect final tuned performance at all (see full writeup for why).
-- **Current operating point** (5% FPR budget, tuned via ROC curve): recall 0.349, precision 0.908, FPR 0.050, adjusted precision 0.631. An F1-maximizing threshold was also tried and rejected — 95% recall at a 47% false-positive rate is unusable (alert fatigue).
-- **Detection is uneven by attack type.** Strong on volumetric floods (DoS Hulk 67.6%, DDoS 41.5%) and Infiltration (80.6%). Near-zero on credential brute-forcing, port scanning, and web attacks (0–3%) — these need cross-flow or payload signals the current flow-shape-only features can't provide, not just a different threshold.
-- **A sampler bug was found and fixed this day:** rows were sampled at a flat 2% regardless of attack type, despite being documented as "stratified." This silently reduced rare attack classes to statistical noise (or, for Infiltration, zero eval rows). Fixed with a class-aware floor; confirmed it changed measurement reliability, not the model itself.
+## ☁️ Deploy to Render
 
-**Per-attack-type recall** at the current operating point:
+Orion deploys as a Docker web service + managed Postgres, declared as infra-as-code in [`render.yaml`](render.yaml). Render is a suitable fit because this project uses a long-running FastAPI service with WebSocket connections and PostgreSQL.
+
+1. **Commit the approved model** (it ships *inside* the image): after `train_detector`, commit `model/preprocessor.pkl`, `model/isolation_forest.pkl`, and `model/model_card.json`. The `.gitignore`/`.dockerignore` allowlist permits exactly these; `.gitattributes` marks them `binary` so their bytes (and thus their SHA-256) survive a Windows→Linux checkout.
+2. **Push**, then in Render: **New → Blueprint** → your repo → Apply. It creates the web service + Postgres (both `region: singapore`) and wires `DATABASE_URL` in.
+3. Watch the logs for `Anomaly detector loaded and integrity-verified`, then open `https://<service>.onrender.com/dashboard`.
+
+`MODEL_REQUIRED=true` is set on Render, so a build that somehow shipped without the model **fails loudly** instead of running a detector with no model. (Free tier sleeps after ~15 min idle → first hit cold-starts in ~30–60s.)
+
+---
+
+## 📊 Model & evaluation
+
+Isolation Forest, trained on **benign flows only** (all attack rows held out for evaluation), with the alert threshold tuned to **maximize recall under a 5% false-positive budget**.
+
+| Metric | Value |
+|---|---|
+| Precision | **0.908** |
+| Recall | **0.349** |
+| F1 | 0.504 |
+| FPR | 0.050 |
+| Adjusted precision (prevalence-corrected) | 0.631 |
+
+Detection is **uneven by attack type** — strong on volumetric floods and infiltration, near-blind on port scans and credential brute-forcing, because those need cross-flow/payload signals the flow-shape-only features can't provide (not just a different threshold).
+
+<details>
+<summary><b>Per-attack-type recall (full table)</b></summary>
 
 | Attack type | Rows | Recall |
 |---|---|---|
-| Heartbleed | 11 (small sample) | 100.0% |
+| Heartbleed | 11 (small) | 100.0% |
 | Infiltration | 36 | 80.6% |
 | DoS Hulk | 4,620 | 67.6% |
 | DDoS | 2,561 | 41.5% |
@@ -260,89 +205,100 @@ non-alerts. An unknown `severity=` value is rejected with a 422.
 | PortScan | 3,179 | 0.2% |
 | SSH-Patator | 299 | 0.0% |
 | FTP-Patator | 300 | 0.0% |
-| Web Attack SQL Injection | 21 (small sample) | 0.0% |
+| Web Attack SQL Injection | 21 (small) | 0.0% |
 
-Full methodology, both operating-point tables, and the reasoning behind why each attack type lands where it does: **[docs/model-evaluation.md](docs/model-evaluation.md)**.
+An F1-maximizing threshold was tried and **rejected**: 95% recall at a 47% false-positive rate is unusable (alert fatigue). `contamination=0.01` is sklearn's training-time noise allowance, *not* real-world prevalence — and it turns out not to affect the tuned operating point.
+</details>
 
-## Architecture
+📄 Full methodology and reasoning: **[docs/model-evaluation.md](docs/model-evaluation.md)**.
+
+### 🔐 Model integrity (how the release is governed)
+
+The two approved artifacts are the *only* `.pkl` files committed, baked into the image, and described by `model/model_card.json` — a release record with provenance (version, dataset + its SHA-256, feature names, runtime versions), the full evaluation, and **each artifact's SHA-256**. At startup, `model/artifact_integrity.py` hashes the files and compares them to the card **before `joblib.load` ever runs** (unpickling untrusted bytes is an RCE risk). A partial release, hash mismatch, missing required release file, or malformed card fails closed. A completely absent model remains an allowed local-development fallback; Render sets MODEL_REQUIRED=true and fails startup instead. It protects against corruption, model/card drift, and a swapped artifact; it does *not* claim to stop an attacker who can edit both the model and the card in the repo — that's the signed-release tier, noted below.
+
+---
+
+## 🗂️ Project structure
 
 ```
-api/            FastAPI application
-  main.py       App entry, lifespan, routes wired, dashboard mount
-  realtime.py   WebSocket ConnectionManager + sync→async broadcast bridge
-  routes/       One file per resource (logs, stats, dashboard/WS)
-core/           Cross-cutting concerns
-  config.py     Env-var-driven settings (12-factor pattern)
-  logging.py    Structured JSON logging
-db/             Persistence layer
-  database.py   Engine, session factory, init_db
-  models.py     SQLAlchemy ORM tables
-  crud.py       Read/write operations
-model/          ML pipeline
-  features.py   FeaturePipeline — fit/transform/save/load
-  detector.py   Detector — Isolation Forest wrapper, scoring, evaluation
-  inference.py  AnomalyScorer — scoring + top baseline-deviation signal
-  severity.py   Maps anomaly_score → low/medium/high/critical tiers
-dashboard/      Live SOC dashboard (static, dependency-free HTML/CSS/JS)
-scripts/        Operational scripts (not run in CI; touch real data)
-  sample_cicids.py    Class-aware sampling from raw CICIDS CSVs
-  fit_pipeline.py     Fits FeaturePipeline, saves model/preprocessor.pkl
-  train_detector.py   Fits Detector, saves model/isolation_forest.pkl + metrics.json
-tests/          pytest suite (synthetic data only — CI has no real CICIDS CSV)
-docs/           Deeper writeups linked from this README (model evaluation, etc.)
-.github/        GitHub Actions CI
-Dockerfile          App image (non-root, healthcheck)
-docker-compose.yml  App + Postgres stack for local containerized runs
-.dockerignore       Keeps secrets/data/models out of the build context
+api/          FastAPI app — main.py (lifespan, routes), realtime.py (WS bridge), routes/
+core/         config.py (12-factor settings), logging.py (structured JSON)
+db/           SQLAlchemy 2.0 — database.py, models.py, crud.py
+model/        features.py · detector.py · inference.py · severity.py
+              artifact_integrity.py (card + verify) · model_card.json (release record)
+dashboard/    Live SOC dashboard — dependency-free HTML/CSS/JS + baked worldmap.js
+scripts/      sample_cicids.py · fit_pipeline.py · train_detector.py · ingest_sample.py
+tests/        142 pytest tests (synthetic data only — CI needs no real CSV)
+Dockerfile · docker-compose.yml · render.yaml   # local + cloud deploy
 ```
 
-Configuration is read exclusively through `core/config.py`. The rest of the codebase imports `settings` rather than touching `os.environ`. This is what made the Day 8 SQLite→Postgres swap a one-line `DATABASE_URL` change with no application code touched.
+All configuration flows through `core/config.py`; nothing else touches `os.environ`. That single seam is what made the SQLite→Postgres swap a one-line change.
 
-## Tech stack
+## 🛠️ Tech stack
 
 - **Backend:** FastAPI (ASGI), built on Starlette
 - **Real-time:** WebSockets (FastAPI/Starlette native), sync→async broadcast bridge
 - **Frontend:** dependency-free HTML/CSS/JS (no build step, no framework), dark SOC theme
+- **ML:** scikit-learn (Isolation Forest), joblib-persisted artifacts with SHA-256 integrity verification
 - **ORM:** SQLAlchemy 2.0 with the typed `Mapped[T]` / `mapped_column()` syntax
 - **Validation:** Pydantic v2
-- **Database:** SQLite (local dev), PostgreSQL (via Docker Compose)
-- **Containers:** Docker + Docker Compose (app + Postgres)
+- **Database:** SQLite (local dev), PostgreSQL (via Docker Compose / Render)
+- **Containers & deploy:** Docker + Docker Compose (app + Postgres), Render Blueprint (infra-as-code)
 - **Testing:** pytest with FastAPI's TestClient (httpx-backed)
 - **CI:** GitHub Actions running pytest on every push
 
-## Known limitations
+## ⚠️ Limitations
 
-- Severity reflects **anomaly magnitude, not ground-truth maliciousness** — a limitation of unsupervised anomaly detection surfacing at the triage layer:
-  - The detector learns "normal" from *typical* benign traffic, so an unusual-but-legitimate flow (e.g. a ~1.5 MB file transfer over ~100s) is genuinely far from that baseline.
-  - Such a flow can therefore score `critical`, right next to real attacks — the model flags "statistically weird," not "malicious."
-  - Observed directly in live testing: several top-scoring `critical` alerts were benign large transfers.
-  - Mitigation (analyst feedback loop / mark-as-false-positive, or a supervised re-ranking layer) is a v2.0 item.
-- SQLite (the local-dev default) strips timezone info on `DateTime(timezone=True)` columns — `event_time` round-trips as a *naive* datetime. **Resolved on Postgres** (Day 8): running via Docker Compose, timestamps round-trip timezone-aware (verified — `event_time` comes back with a UTC offset). This is a SQLite limitation, not an application one.
-- No authentication on any endpoint. Adding auth is a v2.0 item; the threat model for the portfolio scope is "trusted localhost client only."
-- CICIDS 2017's MachineLearningCSV files have IP addresses stripped for privacy, so `source_ip` and `destination_ip` are always `null` in ingested rows. Would require `GeneratedLabelledFlows` or raw PCAPs to recover. This is also why per-source, cross-flow features (which would likely help detect PortScan and credential brute-forcing — see [Model evaluation](#model-evaluation)) aren't feasible with this dataset variant.
-- Per-flow timestamps aren't available in the CICIDS ML CSVs. `event_time` is set to ingestion wall-clock.
-- CICIDS Web Attack labels contain a Unicode replacement character (`�`) from a CP1252 → UTF-8 encoding mismatch in the original dataset. Doesn't affect binary classification.
-- Feature selection is manual (18 columns hand-picked from CICIDS's 78). Automated selection via mutual information or variance thresholds is a v2.0 improvement.
-- The feature pipeline drops rows with inf/NaN at fit time (~0.2% of benign rows lost). At transform time, imputation with learned medians is used instead so single-row inference doesn't fail.
-- `Destination Port` is excluded from features to prevent trivial learning (attack ports map directly to attack types). Categorical port encoding is a v2.0 improvement.
-- `Detector.save()` persists a plain dict payload (model, config, score_scale, decision_threshold, metadata), while `FeaturePipeline.save()` persists the whole fitted object via `joblib.dump(self)`. Two different persistence conventions for the two model classes — not yet reconciled, tracked as backlog.
-- `RST Flag Count`'s attack-subset standard deviation is ≈0.000 (confirmed across two independently sampled datasets) — a near-constant column for attacks in this sample, not a strong standalone signal despite the nonzero mean shift. Low priority given it's one of 18 features, not worth dropping outright without checking its contribution to the trained forest.
-- The dashboard broadcasts **every** ingested log to all connected clients (so the live stream shows benign traffic too), and every client receives every log (no per-client filtering or auth on `WS /ws`). Fine at demo ingest rates on trusted localhost; at production throughput you'd throttle, sample, or split alert/log channels, and gate the socket behind the same auth the API lacks (a v2.0 item).
-- Several dashboard panels are **DEMO / mock data**, clearly badged as such: system health (CPU/RAM/disk — not measured), MITRE ATT&CK coverage (no real ATT&CK mapping engine — a hand-coded event→technique lookup), and the threat-intel feed (no live IOC integration). They're built to show the intended layout for future integration, not to imply the data is real. Everything else on the dashboard is real backend data.
+- **Severity = anomaly magnitude, not proven maliciousness.** An unusual-but-legitimate flow (e.g. a large file transfer) can score `critical` right next to a real attack — the model flags "statistically weird," not "malicious." Observed directly in testing. An analyst feedback loop is the v2 fix.
+- **No authentication** on any endpoint (or the WebSocket). Threat model is "trusted localhost." Auth is a v2 item.
+- **CICIDS ML CSVs strip client IPs**, so `source_ip` is `null` for ingested rows — hence the simulated map, and no cross-flow features (which would help the PortScan/brute-force blind spot).
 
-## Roadmap
+<details>
+<summary><b>More limitations (dataset quirks, persistence, dashboard scope)</b></summary>
 
-See the Day 1-of-10 status above for what's built and what's coming. v2.0 candidates (after the core 10-day build is shipped):
+- SQLite strips timezone info on `DateTime(timezone=True)`; `event_time` round-trips naive locally. **Resolved on Postgres.**
+- Per-flow timestamps aren't in the CICIDS ML CSVs; `event_time` is ingestion wall-clock.
+- CICIDS Web Attack labels contain a `�` from a CP1252→UTF-8 mismatch in the source data (harmless for binary classification).
+- Feature selection is manual (18 of 78 columns); `Destination Port` is excluded to prevent trivial port→attack learning.
+- The pipeline drops inf/NaN rows at fit time (~0.2% of benign) but *imputes* at transform time so single-row inference never fails.
+- `Detector.save()` and `FeaturePipeline.save()` use two different persistence conventions — not yet reconciled (backlog).
+- `WS /ws` broadcasts **every** log to **every** client with no per-client filtering or auth — fine at demo rates on localhost; production would throttle/split channels and gate the socket.
+</details>
 
-- Analyst feedback loop: mark alerts as false positives and feed that back into scoring/re-ranking, so benign outliers (large legitimate transfers) stop surfacing as critical — the mitigation for the severity limitation noted above
-- Neural Network Autoencoder as an alternative detector to compare against Isolation Forest
-- Cross-flow / per-source features (connection rate, distinct-port count in a time window) to address the PortScan and brute-force blind spot — blocked until a CICIDS variant with source IPs, or a different dataset, is used
-- Ingesting real, self-captured system/network logs instead of CICIDS replay — would need a collector/agent that reshapes live traffic into the `/logs/ingest` schema (`event_time`, `source_ip`, `protocol`, `features`, etc.); the schema is designed to be general enough to support this later, but no capture pipeline exists yet
-- Alembic migrations for production schema changes
-- Alert correlation (group related alerts into incidents)
-- MITRE ATT&CK mapping for detected anomalies
-- RabbitMQ for async log ingestion at high throughput
+## 🗺️ Roadmap
 
-## License
+**North star:** turn Orion from CICIDS *replay* into a real SIEM — a lightweight **agent that collects logs from live systems** (host + network telemetry), reshapes them into the `/logs/ingest` schema, and scores them in real time, the way a production SIEM does. The ingestion schema was built to support this; the collector is the missing piece.
 
-MIT.
+Toward that, and beyond:
+
+- 🛰️ **Real log-collection agent** — a collector/agent that streams live system & network events into the API, replacing CICIDS replay *(flagship goal)*
+- 🔁 **Analyst feedback loop** — mark alerts as false positives to re-rank scoring, so benign outliers (large legitimate transfers) stop surfacing as critical
+- 🔐 **Authentication** — secure the REST API and the `WS /ws` socket (currently trusted-localhost only)
+- 🧬 **Cross-flow / per-source features** — connection rate, distinct-port counts in a time window, to close the PortScan / brute-force blind spot (needs a dataset that keeps source IPs)
+- 🤖 **Autoencoder detector** — a neural alternative to benchmark against the Isolation Forest
+- 🧩 **Alert correlation** — group related alerts into incidents
+- 🎯 **Real MITRE ATT&CK mapping** — a technique-mapping engine in place of the current demo lookup
+- 🌍 **Real GeoIP/ASN enrichment + vector basemap (MapLibre)** — make the source-location map real
+- 💡 **SHAP-style attribution** — true per-prediction model explanation vs. today's honest baseline-deviation proxy
+- ⚙️ **Scale & ops** — RabbitMQ for high-throughput async ingestion, Alembic migrations, and signed release manifests for artifacts (the supply-chain tier beyond in-repo hashes)
+
+<details>
+<summary><b>🛠️ How it was built (the 10-day journey)</b></summary>
+
+Built incrementally, one concern per day, each shipped with tests:
+
+1. **Foundation** — FastAPI service, structured logging, CI.
+2. **Persistence** — SQLAlchemy 2.0 models, ingest → list → stats.
+3. **Feature pipeline** — 18 flow-shape features, benign-only StandardScaler (no leakage), median imputation for live rows.
+4. **Detector + evaluation** — Isolation Forest wrapper, calibrated scores, threshold tuning, per-attack recall; fixed a sampler bug that had silently starved rare attack classes.
+5. **Live detection** — `AnomalyScorer` wired into ingest via dependency injection; closed the `is_alert`/`anomaly_score` trust-boundary gap.
+6. **Alert triage** — severity tiers (computed, never stored), composable filters, `/logs/alerts`, per-severity stats.
+7. **Indexing** — indexed `anomaly_score` by its actual query pattern.
+8. **Containerized Postgres** — Dockerfile + Compose; SQLite→Postgres by one `DATABASE_URL`; verified persistence + timezone round-trips.
+9. **Real-time dashboard** — WebSocket `ConnectionManager` + sync→async bridge; the full dependency-free SOC console, log explorer, and real-boundary source map.
+10. **Cloud deploy + model governance** — Render Blueprint, `$PORT`/`postgres://` fixes, and the integrity-verified model release (`model_card.json` + verify-before-load + `MODEL_REQUIRED` fail-closed).
+</details>
+
+## 📄 License
+
+[MIT](LICENSE).
