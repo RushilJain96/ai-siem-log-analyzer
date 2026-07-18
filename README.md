@@ -18,7 +18,7 @@
 
 Orion is a from-scratch **Security Information & Event Management (SIEM)** tool, built over ten days to understand how production platforms (Splunk, Wazuh, Cortex XDR) work under the hood. It's not just a model in a notebook — it treats the production concerns as first-class: a trust boundary on ingestion, a containerized Postgres deployment, a live WebSocket dashboard, an **integrity-verified model release** (SHA-256 verified before load), and a Blueprint-defined cloud deployment.
 
-> 🔗 **Live demo:** _add your Render URL here after deploying_ · **API docs:** `/docs` · **Dashboard:** `/dashboard`
+> 🔗 **Live demo:** [Open Orion SIEM →](https://orion-siem.onrender.com) · **API docs:** `/docs` · **Dashboard:** `/dashboard`
 
 > ⚠️ **Portfolio-demo scope:** log ingestion and WebSocket authentication are not implemented yet. Do not submit real security telemetry or expose the API broadly until an ingestion API key is added.
 
